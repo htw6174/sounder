@@ -3,29 +3,31 @@
 // encode range (echo delay), bearing (HRTF), elevation (brightness),
 // size (pitch register + loudness), composition (timbre), and motion
 // (doppler). The aim is full spatial awareness through audio alone.
+//
+// Your own emissions are silent — you are the click; you hear only
+// what the world says back.
 
 export const SOUND_SPEED = 220;       // game units/sec — slow sound, readable echoes
 
 const TIMBRES = {
   // dense school of fish: hundreds of tiny scatterers — a shimmering
   // granular cloud, bright, spread in time by the school's depth
-  school: { base: 4200, q: 1.2, decay: 0.05, gain: 0.85, grains: true },
+  school: { base: 4200, q: 1.2, decay: 0.05, gain: 1.3, grains: true },
   // blubbery whale: soft, warm, enormous — a low dull thump that lingers
-  whale:  { base: 110,  q: 0.8, decay: 0.55, gain: 1.1,  tonal: true },
+  whale:  { base: 110,  q: 0.8, decay: 0.55, gain: 1.5,  tonal: true },
   // squid: barely there — watery, breathy, a faint downward "blub"
-  squid:  { base: 1500, q: 5.0, decay: 0.12, gain: 0.30, sweep: -0.4 },
+  squid:  { base: 1500, q: 3.5, decay: 0.14, gain: 0.75, sweep: -0.4 },
   // terrain / hard surfaces: sharp broadband crack
-  rock:   { base: 2600, q: 0.6, decay: 0.25, gain: 1.0 },
+  rock:   { base: 2600, q: 0.6, decay: 0.25, gain: 1.1 },
 };
 TIMBRES.giant = { ...TIMBRES.squid, base: 700, decay: 0.3, gain: 0.6 };
 
 export class AudioEngine {
   constructor() {
     this.ready = false;
-    this.panners = new Map();     // contact -> PannerNode
+    this.panners = new Map();     // key -> PannerNode
     this.passive = new Map();     // contact -> {gain, stop()}
     this.heartTimer = 0;
-    this.heartRate = 1.0;
   }
 
   init() {
@@ -45,8 +47,9 @@ export class AudioEngine {
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     this.noise = buf;
 
-    // gentle abyssal room: a touch of feedback-delay "wash" behind echoes
-    this.wash = ctx.createGain(); this.wash.gain.value = 0.18;
+    // gentle abyssal room: a touch of feedback-delay "wash" behind echoes.
+    // kept quiet — a diffuse tail blurs the HRTF bearing cue.
+    this.wash = ctx.createGain(); this.wash.gain.value = 0.10;
     const dly = ctx.createDelay(1); dly.delayTime.value = 0.23;
     const fb = ctx.createGain(); fb.gain.value = 0.35;
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
@@ -62,99 +65,49 @@ export class AudioEngine {
   updateListener(camera) {
     if (!this.ready) return;
     const l = this.ctx.listener, p = camera.position;
-    // forward = -Z column, up = +Y column of the camera's world matrix
+    // forward = -Z column, up = +Y column of the camera's world matrix.
+    // direct value sets — ramp-event pileup lags the HRTF and smears bearing.
     const e = camera.matrixWorld.elements;
-    const fx = -e[8], fy = -e[9], fz = -e[10];
-    const ux = e[4], uy = e[5], uz = e[6];
     if (l.positionX) {
-      const t = this.now(), k = 0.05;
-      l.positionX.linearRampToValueAtTime(p.x, t + k);
-      l.positionY.linearRampToValueAtTime(p.y, t + k);
-      l.positionZ.linearRampToValueAtTime(p.z, t + k);
-      l.forwardX.linearRampToValueAtTime(fx, t + k);
-      l.forwardY.linearRampToValueAtTime(fy, t + k);
-      l.forwardZ.linearRampToValueAtTime(fz, t + k);
-      l.upX.linearRampToValueAtTime(ux, t + k);
-      l.upY.linearRampToValueAtTime(uy, t + k);
-      l.upZ.linearRampToValueAtTime(uz, t + k);
+      l.positionX.value = p.x; l.positionY.value = p.y; l.positionZ.value = p.z;
+      l.forwardX.value = -e[8]; l.forwardY.value = -e[9]; l.forwardZ.value = -e[10];
+      l.upX.value = e[4]; l.upY.value = e[5]; l.upZ.value = e[6];
     } else {
       l.setPosition(p.x, p.y, p.z);
-      l.setOrientation(fx, fy, fz, ux, uy, uz);
+      l.setOrientation(-e[8], -e[9], -e[10], e[4], e[5], e[6]);
     }
   }
 
-  pannerFor(key, pos) {
+  pannerFor(contact, pos) {
+    const key = contact.key ?? contact;     // boundary echoes share keyed panners
     let pan = this.panners.get(key);
     if (!pan) {
       pan = this.ctx.createPanner();
       pan.panningModel = 'HRTF';
       pan.distanceModel = 'exponential';
       pan.refDistance = 6;
-      pan.rolloffFactor = 1.1;
+      pan.rolloffFactor = 0.35;             // hear the whole water column, not just arm's reach
       pan.connect(this.master);
       pan.connect(this.wash);
       this.panners.set(key, pan);
     }
     if (pan.positionX) {
-      const t = this.now(), k = 0.05;
-      pan.positionX.linearRampToValueAtTime(pos.x, t + k);
-      pan.positionY.linearRampToValueAtTime(pos.y, t + k);
-      pan.positionZ.linearRampToValueAtTime(pos.z, t + k);
+      pan.positionX.value = pos.x; pan.positionY.value = pos.y; pan.positionZ.value = pos.z;
     } else pan.setPosition(pos.x, pos.y, pos.z);
     return pan;
   }
 
-  dropPanner(key) {
+  dropPanner(contact) {
+    const key = contact.key ?? contact;
     const pan = this.panners.get(key);
     if (pan) { pan.disconnect(); this.panners.delete(key); }
-    this.stopPassive(key);
-  }
-
-  // ------------------------------------------------------------ the click
-  // Sperm-whale click: short broadband crack with a low body. Non-spatial:
-  // it's your own voice, inside your head.
-  click(power = 1) {
-    if (!this.ready) return;
-    const t = this.now();
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noise;
-    src.playbackRate.value = 1.6;
-    const bp = this.ctx.createBiquadFilter();
-    bp.type = 'bandpass'; bp.frequency.value = 2800; bp.Q.value = 0.7;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.55 * power, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.045);
-    src.connect(bp).connect(g).connect(this.master);
-    src.start(t, Math.random(), 0.06);
-
-    const thump = this.ctx.createOscillator();
-    thump.type = 'sine'; thump.frequency.value = 130;
-    const tg = this.ctx.createGain();
-    tg.gain.setValueAtTime(0.30 * power, t);
-    tg.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
-    thump.connect(tg).connect(this.master);
-    thump.start(t); thump.stop(t + 0.09);
-  }
-
-  // tiny click used for the creak (homing buzz)
-  tick(intensity = 0.5) {
-    if (!this.ready) return;
-    const t = this.now();
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.noise; src.playbackRate.value = 2.2;
-    const bp = this.ctx.createBiquadFilter();
-    bp.type = 'bandpass'; bp.frequency.value = 3600; bp.Q.value = 1.2;
-    const g = this.ctx.createGain();
-    g.gain.setValueAtTime(0.18 * intensity, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
-    src.connect(bp).connect(g).connect(this.master);
-    src.start(t, Math.random(), 0.025);
+    this.stopPassive(contact);
   }
 
   // ------------------------------------------------------------ echoes
   // Schedule the return from one contact. All the perception encoding
   // happens here.
-  //   contact: { kind, pos, size, density?, spread?, vel? }
+  //   contact: { kind, pos, size, density?, spread?, vel?, key? }
   //   observer: { pos, vel }
   echo(contact, observer) {
     if (!this.ready) return 0;
@@ -172,8 +125,8 @@ export class AudioEngine {
     const elev = dy / dist;                          // -1..1
     const brightness = Math.pow(2, elev * 0.9);
 
-    // absorption: distance dulls everything
-    const absorb = 9000 * Math.exp(-dist / 160) + 500;
+    // absorption: distance dulls everything — gently
+    const absorb = 9000 * Math.exp(-dist / 300) + 1200;
 
     // size → register: big = deep. loudness grows with size too.
     const size = contact.size ?? 1;
@@ -187,8 +140,9 @@ export class AudioEngine {
       dop = Math.min(Math.max(1 - (vr / SOUND_SPEED) * 2.5, 0.75), 1.3);
     }
 
-    // two-way spreading loss beyond what the panner models
-    const loss = 1 / (1 + dist * 0.012);
+    // mild extra spreading loss on top of the panner's — slow by design:
+    // range is told by DELAY, not by silence
+    const loss = 1 / (1 + dist * 0.004);
     const gain = T.gain * loss * Math.min(Math.pow(size, 0.8), 3);
 
     const pan = this.pannerFor(contact, contact.pos);
@@ -213,7 +167,7 @@ export class AudioEngine {
         bp.frequency.value = T.base * brightness * reg * (0.6 + Math.random() * 0.9);
         bp.Q.value = 6;
         const g = this.ctx.createGain();
-        const gv = (gain / Math.sqrt(n)) * (0.4 + Math.random() * 0.6) * 0.5;
+        const gv = (gain / Math.sqrt(n)) * (0.4 + Math.random() * 0.6) * 1.4;
         g.gain.setValueAtTime(gv, gt);
         g.gain.exponentialRampToValueAtTime(0.0008, gt + T.decay * (0.5 + Math.random()));
         src.connect(bp).connect(g).connect(lp);
@@ -259,20 +213,55 @@ export class AudioEngine {
     return delay;
   }
 
+  // creak return: one micro-echo from the locked target. The tick RATE is
+  // the rangefinder (the caller times ticks at the round-trip interval);
+  // each tick arrives from the target's true bearing with its timbre.
+  creakEcho(contact, observer) {
+    if (!this.ready) return 0;
+    const dx = contact.pos.x - observer.pos.x;
+    const dy = contact.pos.y - observer.pos.y;
+    const dz = contact.pos.z - observer.pos.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 0.5 || dist > 120) return 0;
+
+    const delay = (2 * dist) / SOUND_SPEED;
+    const t = this.now() + delay;
+    const T = TIMBRES[contact.kind] ?? TIMBRES.rock;
+    const brightness = Math.pow(2, (dy / dist) * 0.9);
+    const reg = 1 / Math.pow(contact.size ?? 1, 0.55);
+    const pan = this.pannerFor(contact, contact.pos);
+
+    const grains = T.grains ? 3 : 1;
+    for (let i = 0; i < grains; i++) {
+      const gt = t + i * 0.008;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.playbackRate.value = 1.2 + Math.random() * 0.6;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.Q.value = Math.max(T.q, 2);
+      bp.frequency.value = T.base * brightness * reg * (0.8 + Math.random() * 0.4);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.32 / grains, gt);
+      g.gain.exponentialRampToValueAtTime(0.001, gt + 0.045);
+      src.connect(bp).connect(g).connect(pan);
+      src.start(gt, Math.random(), 0.05);
+    }
+    return delay;
+  }
+
   // mirror flashes from the surface above and the seafloor below —
-  // an acoustic depth gauge and altimeter.
+  // an acoustic depth gauge and altimeter. keyed panners, reused per ping.
   boundaryEcho(depthBelowSurface, altitudeAboveFloor, observerPos) {
     if (!this.ready) return;
     if (depthBelowSurface > 1) {
-      // surface echo is glassy-bright
       this.echo(
-        { kind: 'rock', pos: { x: observerPos.x, y: observerPos.y + depthBelowSurface, z: observerPos.z }, size: 1.4 },
+        { key: 'surface', kind: 'rock', pos: { x: observerPos.x, y: observerPos.y + depthBelowSurface, z: observerPos.z }, size: 1.4 },
         { pos: observerPos }
       );
     }
     if (altitudeAboveFloor > 1 && altitudeAboveFloor < 420) {
       this.echo(
-        { kind: 'rock', pos: { x: observerPos.x, y: observerPos.y - altitudeAboveFloor, z: observerPos.z }, size: 6 },
+        { key: 'floor', kind: 'rock', pos: { x: observerPos.x, y: observerPos.y - altitudeAboveFloor, z: observerPos.z }, size: 6 },
         { pos: observerPos }
       );
     }
@@ -318,7 +307,7 @@ export class AudioEngine {
         osc.frequency.linearRampToValueAtTime(f * (0.7 + Math.random() * 0.7), t + 2.2);
         const g = this.ctx.createGain();
         g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(0.5, t + 0.7);
+        g.gain.exponentialRampToValueAtTime(0.4, t + 0.7);
         g.gain.exponentialRampToValueAtTime(0.001, t + 2.6);
         osc.connect(g).connect(master);
         osc.start(t); osc.stop(t + 2.8);
@@ -408,11 +397,31 @@ export class AudioEngine {
     src.start(t, Math.random(), 1.2);
   }
 
-  // call every frame: heartbeat speeds up as oxygen falls
-  body(dt, o2Frac, speedFrac) {
+  // breaking the surface, either direction
+  splash(strength = 1) {
     if (!this.ready) return;
-    this.heartRate = 0.9 + (1 - o2Frac) * 2.2 + speedFrac * 0.5;
-    this.heartTimer -= dt * this.heartRate;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 0.8;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(2600, t);
+    lp.frequency.exponentialRampToValueAtTime(500, t + 0.5);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.7 * strength, t + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 0.65);
+  }
+
+  // call every frame: the heart is silent until the tank runs low —
+  // it pounds inside your skull (deliberately non-spatial)
+  body(dt, o2Frac) {
+    if (!this.ready || o2Frac >= 0.10) return;
+    const urgency = (0.10 - o2Frac) / 0.10;          // 0..1 as o2 10% → 0
+    const rate = 1.2 + urgency * 1.5;
+    this.heartTimer -= dt * rate;
     if (this.heartTimer <= 0) {
       this.heartTimer = 1;
       const t = this.now();
@@ -426,7 +435,7 @@ export class AudioEngine {
         osc.connect(g).connect(this.master);
         osc.start(at); osc.stop(at + 0.15);
       };
-      const v = 0.08 + (1 - o2Frac) * 0.3;
+      const v = 0.12 + urgency * 0.3;
       lub(t, 55, v); lub(t + 0.18, 45, v * 0.7);
     }
   }

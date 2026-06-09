@@ -50,6 +50,7 @@ const waterUniforms = { uBrightness: { value: 1 } };
   sky.onBeforeRender = () => sky.position.copy(camera.position);
 }
 
+let surfaceMesh;
 const surfaceUniforms = {
   uTime: { value: 0 },
   uSunPos: { value: new THREE.Vector3(22, 0, -95) },
@@ -95,9 +96,9 @@ const surfaceUniforms = {
   });
   const geo = new THREE.PlaneGeometry(900, 900, 140, 140);
   geo.rotateX(Math.PI / 2);
-  const surface = new THREE.Mesh(geo, mat);
-  scene.add(surface);
-  surface.onBeforeRender = () => { surface.position.x = camera.position.x; surface.position.z = camera.position.z; };
+  surfaceMesh = new THREE.Mesh(geo, mat);
+  scene.add(surfaceMesh);
+  surfaceMesh.onBeforeRender = () => { surfaceMesh.position.x = camera.position.x; surfaceMesh.position.z = camera.position.z; };
 }
 
 // seafloor (you will almost never see it; you will hear it).
@@ -116,19 +117,25 @@ let floorMesh;
   scene.add(floorMesh);
 }
 
-// marine snow that follows the player
-let snow, snowVel;
+// marine snow — fixed in the WORLD (it's the only thing that tells you
+// how fast you're moving in the dark). Particles live in a wrap-around
+// cube centered on the player and fade with depth.
+let snow, snowSink, snowMat;
+const SNOW_R = 55;
 {
-  const N = 1400, R = 60;
-  const pos = new Float32Array(N * 3); snowVel = new Float32Array(N);
+  const N = 1200;
+  const pos = new Float32Array(N * 3); snowSink = new Float32Array(N);
   for (let i = 0; i < N; i++) {
-    pos[i*3] = (Math.random()-0.5)*R*2; pos[i*3+1] = (Math.random()-0.5)*R*2; pos[i*3+2] = (Math.random()-0.5)*R*2;
-    snowVel[i] = 0.1 + Math.random()*0.3;
+    pos[i*3]   = (Math.random()-0.5)*SNOW_R*2;
+    pos[i*3+1] = -6 + (Math.random()-0.5)*SNOW_R*2;
+    pos[i*3+2] = (Math.random()-0.5)*SNOW_R*2;
+    snowSink[i] = 0.1 + Math.random()*0.3;
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const mat = new THREE.PointsMaterial({ size: 0.4, map: dotTexture(), transparent: true, opacity: 0.55, depthWrite: false, color: 0xbfe3ff });
-  snow = new THREE.Points(geo, mat);
+  snowMat = new THREE.PointsMaterial({ size: 0.35, map: dotTexture(), transparent: true, opacity: 0.5, depthWrite: false, color: 0xbfe3ff });
+  snow = new THREE.Points(geo, snowMat);
+  snow.frustumCulled = false;
   scene.add(snow);
 }
 
@@ -241,7 +248,7 @@ addWhale(-40, -45, -120);
 const player = {
   vel: new THREE.Vector3(),
   o2: 1, score: 0, bestDepth: 0,
-  lungeT: 0, pingCd: 0,
+  lungeT: 0, pingCd: 0, creaking: false,
   dead: false,
 };
 const euler = new THREE.Euler(0, 0, 0, 'YXZ');
@@ -260,6 +267,7 @@ function start() {
 }
 gate.addEventListener('click', start);
 canvas.addEventListener('click', start);
+addEventListener('contextmenu', (e) => e.preventDefault());
 
 addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
@@ -269,18 +277,23 @@ addEventListener('mousemove', (e) => {
 });
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
-  if (e.code === 'Space') { e.preventDefault(); ping(); }
+  if (e.code === 'Space') e.preventDefault();      // space = rise
   if (e.code === 'KeyF') bite();
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
-addEventListener('mousedown', (e) => { if (document.pointerLockElement === canvas && e.button === 0) ping(); });
+addEventListener('mousedown', (e) => {
+  if (document.pointerLockElement !== canvas) return;
+  if (e.button === 0) ping();
+  if (e.button === 2) player.creaking = true;
+});
+addEventListener('mouseup', (e) => { if (e.button === 2) player.creaking = false; });
 
 // ------------------------------------------------------------------ sonar
+// Emissions are SILENT — you are the click. You hear only the returns.
 const flashes = [];
 function ping() {
   if (!started || player.pingCd > 0 || player.dead) return;
   player.pingCd = 0.9;
-  audio.click();
   const obs = { pos: camera.position, vel: player.vel };
   const depth = -camera.position.y;
   let nearest = null, nearestD = 1e9;
@@ -359,15 +372,83 @@ const fade = document.createElement('div');
 fade.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;transition:opacity 3s ease;pointer-events:none';
 document.body.appendChild(fade);
 
+// ------------------------------------------------- vestibular sense (nav)
+// A faint inner-ear overlay: a world-level horizon line that drifts with
+// pitch, carrying dim cardinal ticks. Brighter in the dark, where it's
+// the only orientation you have besides sound.
+const nav = document.getElementById('nav');
+const nctx = nav.getContext('2d');
+function sizeNav() { nav.width = innerWidth; nav.height = innerHeight; }
+sizeNav();
+
+const CARDINALS = [];
+for (let i = 0; i < 16; i++) {
+  CARDINALS.push({ a: i * Math.PI / 8, label: ['N','','NE','','E','','SE','','S','','SW','','W','','NW',''][i] });
+}
+const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+function drawNav(dark) {
+  const W = nav.width, H = nav.height;
+  nctx.clearRect(0, 0, W, H);
+  if (camera.position.y > 0 || !started) return;
+
+  const alpha = 0.10 + dark * 0.3;
+  const fovY = camera.fov * Math.PI / 180;
+  const fovX = 2 * Math.atan(Math.tan(fovY / 2) * camera.aspect);
+  const pitch = euler.x;
+  let hy = H / 2 + (pitch / fovY) * H;     // horizon: look up → line slides down
+  let clamped = false;
+  if (hy < H * 0.08) { hy = H * 0.08; clamped = true; }
+  if (hy > H * 0.92) { hy = H * 0.92; clamped = true; }
+  const a = clamped ? alpha * 0.35 : alpha;
+
+  // horizon line, fading at the edges
+  const grad = nctx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, 'rgba(150,215,250,0)');
+  grad.addColorStop(0.18, `rgba(150,215,250,${a})`);
+  grad.addColorStop(0.82, `rgba(150,215,250,${a})`);
+  grad.addColorStop(1, 'rgba(150,215,250,0)');
+  nctx.strokeStyle = grad;
+  nctx.lineWidth = 1;
+  nctx.beginPath(); nctx.moveTo(0, hy); nctx.lineTo(W, hy); nctx.stroke();
+
+  // cardinal ticks slide along the horizon as you turn
+  const heading = -euler.y;
+  nctx.font = '13px "Cormorant Garamond", Georgia, serif';
+  nctx.textAlign = 'center';
+  for (const c of CARDINALS) {
+    const rel = wrapPi(c.a - heading);
+    if (Math.abs(rel) > fovX / 2) continue;
+    const x = W / 2 + (rel / fovX) * W;
+    const major = c.label.length === 1;
+    nctx.strokeStyle = `rgba(150,215,250,${a * (major ? 1 : 0.5)})`;
+    nctx.beginPath(); nctx.moveTo(x, hy - (major ? 7 : 4)); nctx.lineTo(x, hy + (major ? 7 : 4)); nctx.stroke();
+    if (c.label) {
+      nctx.fillStyle = `rgba(180,225,250,${a * 1.4})`;
+      nctx.fillText(c.label, x, hy - 12);
+    }
+  }
+
+  // pitch dashes on the center column every 30°
+  nctx.textAlign = 'left';
+  for (const pm of [-1.047, -0.524, 0.524, 1.047]) {
+    const y = H / 2 + ((pitch - pm) / fovY) * H;
+    if (y < H * 0.1 || y > H * 0.9) continue;
+    nctx.strokeStyle = `rgba(150,215,250,${alpha * 0.6})`;
+    nctx.beginPath(); nctx.moveTo(W / 2 - 14, y); nctx.lineTo(W / 2 + 14, y); nctx.stroke();
+  }
+}
+
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
-let firstPing = false, creakTimer = 0;
+let firstPing = false, creakTimer = 0, wasUnder = true;
 
 function tick() {
   requestAnimationFrame(tick);
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
   const depth = -camera.position.y;
+  const under = camera.position.y < 0;
 
   // ---- movement
   const fwd = camera.getWorldDirection(new THREE.Vector3());
@@ -376,9 +457,15 @@ function tick() {
   if (keys.KeyS) thrust = -4;
   if (player.lungeT > 0) { player.lungeT -= dt; thrust += 26 * (player.lungeT / 0.35); }
   player.vel.addScaledVector(fwd, thrust * dt);
-  player.vel.multiplyScalar(Math.pow(0.45, dt));      // water drag
+  if (under) {
+    if (keys.Space) player.vel.y += 9 * dt;                      // rise
+    if (keys.ShiftLeft || keys.ShiftRight) player.vel.y -= 9 * dt; // sink
+    player.vel.multiplyScalar(Math.pow(0.45, dt));               // water drag
+  } else {
+    player.vel.y -= 16 * dt;                                     // gravity: what goes up
+    player.vel.multiplyScalar(Math.pow(0.92, dt));               // thin air
+  }
   camera.position.addScaledVector(player.vel, dt);
-  camera.position.y = Math.min(camera.position.y, -1.2);
   const fy = floorY(camera.position.x, camera.position.z) + 2;
   camera.position.y = Math.max(camera.position.y, fy);
   const horiz = Math.hypot(camera.position.x, camera.position.z);
@@ -386,34 +473,41 @@ function tick() {
     camera.position.x *= 430/horiz; camera.position.z *= 430/horiz;
   }
 
-  // ---- oxygen
-  if (!player.dead) {
+  // breaching
+  if (under !== wasUnder) {
+    audio.splash(under ? 0.5 : Math.min(Math.abs(player.vel.y) / 10, 1));
+    if (!under) audio.breath();
+    wasUnder = under;
+  }
+
+  // ---- oxygen (the clock starts when the hunt does)
+  if (started && !player.dead) {
     if (depth < 3.5) {
       if (player.o2 < 0.98 && Math.floor(t*2)%4===0) audio.breath();
       player.o2 = Math.min(1, player.o2 + dt * 0.25);
     } else {
-      player.o2 -= dt / 240;   // ~4 min tank: enough to reach the abyss and come home
+      player.o2 -= dt / 600;     // ten minutes of breath
       if (player.o2 <= 0) blackout();
     }
   }
 
-  // ---- creak: hold C for range-rate ticking on what's ahead
-  if (keys.KeyC && started && !player.dead) {
-    let best = null, bd = 80;
+  // ---- creak: hold right-click (or C). Locks the nearest prey in ANY
+  // direction; tick interval IS the round-trip time, so the buzz itself
+  // is the rangefinder. Each tick returns from the target's true bearing.
+  if ((player.creaking || keys.KeyC) && started && !player.dead) {
+    let target = null, bd = 90;
     for (const c of contacts) {
       if (c.kind === 'whale') continue;
-      const to = c.pos.clone().sub(camera.position);
-      const d = to.length();
-      if (d < bd && to.normalize().dot(fwd) > 0.7) { best = c; bd = d; }
+      const d = c.pos.distanceTo(camera.position);
+      if (d < bd) { target = c; bd = d; }
     }
     creakTimer -= dt;
-    if (creakTimer <= 0) {
-      if (best) {
-        creakTimer = Math.max(0.05, bd / 90);     // tick rate IS the rangefinder
-        audio.tick(1 - bd/100);
-      } else { creakTimer = 0.5; audio.tick(0.12); }
+    if (creakTimer <= 0 && target) {
+      creakTimer = Math.max((2 * bd) / SOUND_SPEED, 0.045);
+      audio.creakEcho(target, { pos: camera.position, vel: player.vel });
     }
-  }
+    if (!target) creakTimer = 0;
+  } else creakTimer = 0;
 
   // ---- contacts behavior
   for (const c of contacts) {
@@ -428,8 +522,7 @@ function tick() {
       c.pos.addScaledVector(c.vel, dt);
       c.mesh.rotation.y = -c.heading;
     } else { // squid & giant
-      const toPlayer = camera.position.clone().sub(c.pos);
-      const d = toPlayer.length();
+      const d = c.pos.distanceTo(camera.position);
       if (c.kind === 'squid' && d < 13 && c.jetT <= 0) startJet(c);
       if (c.jetT > 0) {
         c.jetT -= dt;
@@ -463,12 +556,13 @@ function tick() {
   const fogC = FOG_BASE.clone().multiplyScalar(Math.max(1 - dark, 0.0));
   scene.fog.color.copy(fogC);
   scene.background.copy(fogC);
-  scene.fog.density = 0.026 + black * 0.05;
+  scene.fog.density = under ? 0.026 + black * 0.05 : 0.002;
   waterUniforms.uBrightness.value = Math.max(1 - dark * 1.1, 0);
   surfaceUniforms.uBrightness.value = Math.max(1 - dark, 0);
   surfaceUniforms.uTime.value = t;
   surfaceUniforms.uFogColor.value.copy(fogC).convertLinearToSRGB();
   floorMesh.visible = depth > TWILIGHT * 0.8;   // by then the fog is near-black
+  surfaceMesh.visible = depth < 200;            // below that it's just a black silhouette
 
   const zone = depth < SUNLIT ? 'THE SUNLIT ZONE' : depth < TWILIGHT ? 'THE TWILIGHT' : 'THE ABYSS';
   if (zone !== curZone) {
@@ -477,16 +571,20 @@ function tick() {
     if (zone === 'THE ABYSS') say('blind now. everything is sound.', 5);
   }
 
-  // ---- snow follows player
+  // ---- marine snow: world-fixed, recycled around the player, depth-faded
   {
-    const p = snow.geometry.attributes.position, R = 60;
-    snow.position.copy(camera.position);
+    const p = snow.geometry.attributes.position;
+    const cp = camera.position;
     for (let i = 0; i < p.count; i++) {
-      let y = p.getY(i) - snowVel[i] * dt;
-      if (y < -R) y += 2*R;
-      p.setY(i, y);
+      let x = p.getX(i), y = p.getY(i) - snowSink[i] * dt, z = p.getZ(i);
+      // wrap into the cube around the player without disturbing world-anchoring
+      if (x - cp.x >  SNOW_R) x -= SNOW_R*2; else if (x - cp.x < -SNOW_R) x += SNOW_R*2;
+      if (y - cp.y >  SNOW_R) y -= SNOW_R*2; else if (y - cp.y < -SNOW_R) y += SNOW_R*2;
+      if (z - cp.z >  SNOW_R) z -= SNOW_R*2; else if (z - cp.z < -SNOW_R) z += SNOW_R*2;
+      p.setXYZ(i, x, y, z);
     }
     p.needsUpdate = true;
+    snowMat.opacity = 0.5 * (1 - dark) + 0.05;   // barely-there in the deep
   }
 
   // ---- flashes (sound made visible, sunlit calibration)
@@ -501,13 +599,13 @@ function tick() {
   // ---- audio frame work
   if (started) {
     audio.updateListener(camera);
-    audio.body(dt, player.o2, Math.min(player.vel.length() / 14, 1));
+    audio.body(dt, player.o2);
   }
 
   // ---- HUD
   player.pingCd -= dt;
   player.bestDepth = Math.max(player.bestDepth, depth);
-  $('depthNum').textContent = Math.round(depth);
+  $('depthNum').textContent = Math.max(0, Math.round(depth));
   const alt = camera.position.y - floorY(camera.position.x, camera.position.z);
   $('alt').textContent = alt < 200 ? `alt ${Math.round(alt)} m` : '';
   $('o2').style.height = `${player.o2 * 100}%`;
@@ -518,6 +616,7 @@ function tick() {
     setTimeout(() => say('near answers come fast. far answers come late.', 5), 1500);
   }
 
+  drawNav(dark);
   renderer.render(scene, camera);
 }
 
@@ -557,11 +656,12 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  sizeNav();
 });
 
 // ------------------------------------------------------------------ debug
 window.SOUNDER = {
-  contacts, camera, player, audio, scene,
+  contacts, camera, player, audio, scene, euler, keys,
   ping, bite,
   state: () => ({
     depth: -camera.position.y,

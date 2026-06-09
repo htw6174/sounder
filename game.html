@@ -9,6 +9,7 @@
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: crosshair; }
   #scene { position: fixed; inset: 0; display: block; }
+  #nav { position: fixed; inset: 0; pointer-events: none; }
   .serif { font-family: 'Cormorant Garamond', Georgia, serif; }
 
   #hud {
@@ -71,6 +72,7 @@
     background: radial-gradient(ellipse at 50% 40%, #07314f 0%, #021018 75%);
     color: #dff3ff; text-align: center; cursor: pointer;
     transition: opacity 1.2s ease;
+    z-index: 10;
   }
   #gate.gone { opacity: 0; pointer-events: none; }
   #gate h2 { font-family: 'Cinzel', Georgia, serif; font-weight: 500; letter-spacing: 0.4em; text-indent: 0.4em; font-size: 30px; margin: 0; }
@@ -88,6 +90,7 @@
 </head>
 <body>
 <canvas id="scene"></canvas>
+<canvas id="nav"></canvas>
 
 <div id="hud">
   <div id="ret"></div>
@@ -97,7 +100,7 @@
   <div id="score">∅</div>
   <div id="zone"></div>
   <div id="msg"></div>
-  <div id="controls">mouse steer · W swim · space click · hold&nbsp;C creak · F bite · surface to breathe</div>
+  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · F bite</div>
 </div>
 
 <div id="gate">
@@ -106,7 +109,9 @@
      Click, and the world answers: near things answer quickly, far things late.
      High voices are small or above you; low voices are large or below.
      A shimmer is a thousand fish; a warm thump is family; a breath of static,
-     barely there — that is what you eat.
+     barely there — that is what you eat. Your own voice is silent in your
+     ears; you hear only what comes back. Hold your creak on a contact and
+     the buzz quickens as you close.
      Learn the sound of everything while the light lasts. Then dive.</p>
   <div class="go">click to wake</div>
 </div>
