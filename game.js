@@ -495,12 +495,14 @@ function tick() {
   // direction; tick interval IS the round-trip time, so the buzz itself
   // is the rangefinder. Each tick returns from the target's true bearing.
   if ((player.creaking || keys.KeyC) && started && !player.dead) {
-    let target = null, bd = 90;
+    let target = null, bd = 90, school = null, sd = 90;
     for (const c of contacts) {
       if (c.kind === 'whale') continue;
       const d = c.pos.distanceTo(camera.position);
-      if (d < bd) { target = c; bd = d; }
+      if (c.kind === 'school') { if (d < sd) { school = c; sd = d; } }
+      else if (d < bd) { target = c; bd = d; }
     }
+    if (!target) { target = school; bd = sd; }   // prey outranks fish for the lock
     creakTimer -= dt;
     if (creakTimer <= 0 && target) {
       creakTimer = Math.max((2 * bd) / SOUND_SPEED, 0.045);
@@ -600,6 +602,7 @@ function tick() {
   if (started) {
     audio.updateListener(camera);
     audio.body(dt, player.o2);
+    audio.ambient(under ? THREE.MathUtils.clamp(1 - depth / 15, 0, 1) : 1, black);
   }
 
   // ---- HUD

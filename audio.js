@@ -56,7 +56,36 @@ export class AudioEngine {
     this.wash.connect(dly).connect(lp).connect(fb).connect(dly);
     lp.connect(this.master);
 
+    // ambient bed: surf hiss up top, sub-bass pressure down deep.
+    // both are depth gauges you don't have to ping for.
+    const mkLoop = (filterType, freq, q) => {
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.loop = true; src.playbackRate.value = 0.5;
+      const f = ctx.createBiquadFilter();
+      f.type = filterType; f.frequency.value = freq; f.Q.value = q;
+      const g = ctx.createGain(); g.gain.value = 0;
+      src.connect(f).connect(g).connect(this.master);
+      src.start();
+      return g;
+    };
+    this.surfGain = mkLoop('bandpass', 650, 0.5);
+    this.surfLfo = ctx.createOscillator();
+    this.surfLfo.frequency.value = 0.13;
+    this.surfDepthGain = ctx.createGain(); this.surfDepthGain.gain.value = 0;
+    // LFO swells the surf like passing waves
+    const lfoAmp = ctx.createGain(); lfoAmp.gain.value = 0.035;
+    this.surfLfo.connect(lfoAmp).connect(this.surfGain.gain);
+    this.surfLfo.start();
+    this.rumbleGain = mkLoop('lowpass', 65, 0.7);
+
     this.ready = true;
+  }
+
+  // call every frame with how shallow / how deep the player is (0..1 each)
+  ambient(shallowFrac, deepFrac) {
+    if (!this.ready) return;
+    this.surfGain.gain.value = 0.07 * shallowFrac;
+    this.rumbleGain.gain.value = 0.09 * deepFrac;
   }
 
   now() { return this.ctx.currentTime; }
