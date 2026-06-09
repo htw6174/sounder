@@ -1,0 +1,433 @@
+// SOUNDER — echolocation audio engine.
+// Every contact in the world is rendered as sound with parameters that
+// encode range (echo delay), bearing (HRTF), elevation (brightness),
+// size (pitch register + loudness), composition (timbre), and motion
+// (doppler). The aim is full spatial awareness through audio alone.
+
+export const SOUND_SPEED = 220;       // game units/sec — slow sound, readable echoes
+
+const TIMBRES = {
+  // dense school of fish: hundreds of tiny scatterers — a shimmering
+  // granular cloud, bright, spread in time by the school's depth
+  school: { base: 4200, q: 1.2, decay: 0.05, gain: 0.85, grains: true },
+  // blubbery whale: soft, warm, enormous — a low dull thump that lingers
+  whale:  { base: 110,  q: 0.8, decay: 0.55, gain: 1.1,  tonal: true },
+  // squid: barely there — watery, breathy, a faint downward "blub"
+  squid:  { base: 1500, q: 5.0, decay: 0.12, gain: 0.30, sweep: -0.4 },
+  // terrain / hard surfaces: sharp broadband crack
+  rock:   { base: 2600, q: 0.6, decay: 0.25, gain: 1.0 },
+};
+TIMBRES.giant = { ...TIMBRES.squid, base: 700, decay: 0.3, gain: 0.6 };
+
+export class AudioEngine {
+  constructor() {
+    this.ready = false;
+    this.panners = new Map();     // contact -> PannerNode
+    this.passive = new Map();     // contact -> {gain, stop()}
+    this.heartTimer = 0;
+    this.heartRate = 1.0;
+  }
+
+  init() {
+    if (this.ready) return;
+    const ctx = this.ctx = new AudioContext();
+    this.master = ctx.createDynamicsCompressor();
+    this.master.threshold.value = -18;
+    this.master.ratio.value = 6;
+    this.out = ctx.createGain();
+    this.out.gain.value = 0.9;
+    this.master.connect(this.out).connect(ctx.destination);
+
+    // shared noise buffer
+    const len = ctx.sampleRate * 1.5;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    this.noise = buf;
+
+    // gentle abyssal room: a touch of feedback-delay "wash" behind echoes
+    this.wash = ctx.createGain(); this.wash.gain.value = 0.18;
+    const dly = ctx.createDelay(1); dly.delayTime.value = 0.23;
+    const fb = ctx.createGain(); fb.gain.value = 0.35;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+    this.wash.connect(dly).connect(lp).connect(fb).connect(dly);
+    lp.connect(this.master);
+
+    this.ready = true;
+  }
+
+  now() { return this.ctx.currentTime; }
+
+  // ------------------------------------------------------------ listener
+  updateListener(camera) {
+    if (!this.ready) return;
+    const l = this.ctx.listener, p = camera.position;
+    // forward = -Z column, up = +Y column of the camera's world matrix
+    const e = camera.matrixWorld.elements;
+    const fx = -e[8], fy = -e[9], fz = -e[10];
+    const ux = e[4], uy = e[5], uz = e[6];
+    if (l.positionX) {
+      const t = this.now(), k = 0.05;
+      l.positionX.linearRampToValueAtTime(p.x, t + k);
+      l.positionY.linearRampToValueAtTime(p.y, t + k);
+      l.positionZ.linearRampToValueAtTime(p.z, t + k);
+      l.forwardX.linearRampToValueAtTime(fx, t + k);
+      l.forwardY.linearRampToValueAtTime(fy, t + k);
+      l.forwardZ.linearRampToValueAtTime(fz, t + k);
+      l.upX.linearRampToValueAtTime(ux, t + k);
+      l.upY.linearRampToValueAtTime(uy, t + k);
+      l.upZ.linearRampToValueAtTime(uz, t + k);
+    } else {
+      l.setPosition(p.x, p.y, p.z);
+      l.setOrientation(fx, fy, fz, ux, uy, uz);
+    }
+  }
+
+  pannerFor(key, pos) {
+    let pan = this.panners.get(key);
+    if (!pan) {
+      pan = this.ctx.createPanner();
+      pan.panningModel = 'HRTF';
+      pan.distanceModel = 'exponential';
+      pan.refDistance = 6;
+      pan.rolloffFactor = 1.1;
+      pan.connect(this.master);
+      pan.connect(this.wash);
+      this.panners.set(key, pan);
+    }
+    if (pan.positionX) {
+      const t = this.now(), k = 0.05;
+      pan.positionX.linearRampToValueAtTime(pos.x, t + k);
+      pan.positionY.linearRampToValueAtTime(pos.y, t + k);
+      pan.positionZ.linearRampToValueAtTime(pos.z, t + k);
+    } else pan.setPosition(pos.x, pos.y, pos.z);
+    return pan;
+  }
+
+  dropPanner(key) {
+    const pan = this.panners.get(key);
+    if (pan) { pan.disconnect(); this.panners.delete(key); }
+    this.stopPassive(key);
+  }
+
+  // ------------------------------------------------------------ the click
+  // Sperm-whale click: short broadband crack with a low body. Non-spatial:
+  // it's your own voice, inside your head.
+  click(power = 1) {
+    if (!this.ready) return;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.playbackRate.value = 1.6;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 2800; bp.Q.value = 0.7;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.55 * power, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.045);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 0.06);
+
+    const thump = this.ctx.createOscillator();
+    thump.type = 'sine'; thump.frequency.value = 130;
+    const tg = this.ctx.createGain();
+    tg.gain.setValueAtTime(0.30 * power, t);
+    tg.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    thump.connect(tg).connect(this.master);
+    thump.start(t); thump.stop(t + 0.09);
+  }
+
+  // tiny click used for the creak (homing buzz)
+  tick(intensity = 0.5) {
+    if (!this.ready) return;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 2.2;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 3600; bp.Q.value = 1.2;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.18 * intensity, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 0.025);
+  }
+
+  // ------------------------------------------------------------ echoes
+  // Schedule the return from one contact. All the perception encoding
+  // happens here.
+  //   contact: { kind, pos, size, density?, spread?, vel? }
+  //   observer: { pos, vel }
+  echo(contact, observer) {
+    if (!this.ready) return 0;
+    const dx = contact.pos.x - observer.pos.x;
+    const dy = contact.pos.y - observer.pos.y;
+    const dz = contact.pos.z - observer.pos.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 0.5 || dist > 420) return 0;
+
+    const delay = (2 * dist) / SOUND_SPEED;
+    const t = this.now() + delay;
+    const T = TIMBRES[contact.kind] ?? TIMBRES.rock;
+
+    // elevation → brightness: contacts above you ring brighter, below duller
+    const elev = dy / dist;                          // -1..1
+    const brightness = Math.pow(2, elev * 0.9);
+
+    // absorption: distance dulls everything
+    const absorb = 9000 * Math.exp(-dist / 160) + 500;
+
+    // size → register: big = deep. loudness grows with size too.
+    const size = contact.size ?? 1;
+    const reg = 1 / Math.pow(size, 0.55);
+
+    // doppler: closing contacts return sharp, fleeing ones flat
+    let dop = 1;
+    if (contact.vel) {
+      const vr = (contact.vel.x * dx + contact.vel.y * dy + contact.vel.z * dz) / dist
+               - ((observer.vel?.x ?? 0) * dx + (observer.vel?.y ?? 0) * dy + (observer.vel?.z ?? 0) * dz) / dist;
+      dop = Math.min(Math.max(1 - (vr / SOUND_SPEED) * 2.5, 0.75), 1.3);
+    }
+
+    // two-way spreading loss beyond what the panner models
+    const loss = 1 / (1 + dist * 0.012);
+    const gain = T.gain * loss * Math.min(Math.pow(size, 0.8), 3);
+
+    const pan = this.pannerFor(contact, contact.pos);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = absorb;
+    lp.connect(pan);
+    setTimeout(() => lp.disconnect(), (delay + 2) * 1000);
+
+    if (T.grains) {
+      // fish school: a cloud of micro-echoes. density → grain count,
+      // physical spread → time smear. You can HEAR the school's texture.
+      const density = contact.density ?? 1;
+      const n = Math.round(12 + 40 * density * Math.min(size, 2));
+      const smear = 0.03 + (contact.spread ?? size * 4) / SOUND_SPEED;
+      for (let i = 0; i < n; i++) {
+        const gt = t + Math.random() * smear;
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noise;
+        src.playbackRate.value = (1.5 + Math.random()) * dop;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = T.base * brightness * reg * (0.6 + Math.random() * 0.9);
+        bp.Q.value = 6;
+        const g = this.ctx.createGain();
+        const gv = (gain / Math.sqrt(n)) * (0.4 + Math.random() * 0.6) * 0.5;
+        g.gain.setValueAtTime(gv, gt);
+        g.gain.exponentialRampToValueAtTime(0.0008, gt + T.decay * (0.5 + Math.random()));
+        src.connect(bp).connect(g).connect(lp);
+        src.start(gt, Math.random(), 0.05);
+      }
+    } else if (T.tonal) {
+      // whale: warm tonal thump
+      const osc = this.ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = T.base * reg * brightness * dop;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(gain * 0.8, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.001, t + T.decay);
+      osc.connect(g).connect(lp);
+      osc.start(t); osc.stop(t + T.decay + 0.1);
+      // blubber body: dull noise behind the tone
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise; src.playbackRate.value = 0.4 * dop;
+      const lp2 = this.ctx.createBiquadFilter();
+      lp2.type = 'lowpass'; lp2.frequency.value = 320 * brightness;
+      const g2 = this.ctx.createGain();
+      g2.gain.setValueAtTime(gain * 0.35, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + T.decay * 0.8);
+      src.connect(lp2).connect(g2).connect(lp);
+      src.start(t, Math.random(), T.decay);
+    } else {
+      // squid / rock: filtered noise burst, optional pitch sweep
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      src.playbackRate.value = dop;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.Q.value = T.q;
+      const f0 = T.base * reg * brightness;
+      bp.frequency.setValueAtTime(f0, t);
+      if (T.sweep) bp.frequency.exponentialRampToValueAtTime(f0 * (1 + T.sweep), t + T.decay);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(gain * 0.6, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + T.decay);
+      src.connect(bp).connect(g).connect(lp);
+      src.start(t, Math.random(), T.decay + 0.05);
+    }
+    return delay;
+  }
+
+  // mirror flashes from the surface above and the seafloor below —
+  // an acoustic depth gauge and altimeter.
+  boundaryEcho(depthBelowSurface, altitudeAboveFloor, observerPos) {
+    if (!this.ready) return;
+    if (depthBelowSurface > 1) {
+      // surface echo is glassy-bright
+      this.echo(
+        { kind: 'rock', pos: { x: observerPos.x, y: observerPos.y + depthBelowSurface, z: observerPos.z }, size: 1.4 },
+        { pos: observerPos }
+      );
+    }
+    if (altitudeAboveFloor > 1 && altitudeAboveFloor < 420) {
+      this.echo(
+        { kind: 'rock', pos: { x: observerPos.x, y: observerPos.y - altitudeAboveFloor, z: observerPos.z }, size: 6 },
+        { pos: observerPos }
+      );
+    }
+  }
+
+  // ------------------------------------------------------------ passive layer
+  // sounds the world makes on its own, attached per contact while in range
+  startPassive(contact) {
+    if (!this.ready || this.passive.has(contact)) return;
+    const pan = this.pannerFor(contact, contact.pos);
+    const master = this.ctx.createGain();
+    master.gain.value = 0;
+    master.connect(pan);
+    let alive = true;
+    const entry = { gain: master, stop: () => { alive = false; master.disconnect(); } };
+
+    if (contact.kind === 'school') {
+      // faint static crackle, like rain on the hull
+      const loop = () => {
+        if (!alive) return;
+        const t = this.now();
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noise; src.playbackRate.value = 2 + Math.random();
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass'; bp.frequency.value = 5000 + Math.random() * 3000; bp.Q.value = 8;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.05 + Math.random() * 0.05, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+        src.connect(bp).connect(g).connect(master);
+        src.start(t, Math.random(), 0.04);
+        entry.timer = setTimeout(loop, 30 + Math.random() * 120 / (contact.density ?? 1));
+      };
+      loop();
+    } else if (contact.kind === 'whale') {
+      // slow moaning phrases
+      const phrase = () => {
+        if (!alive) return;
+        const t = this.now();
+        const osc = this.ctx.createOscillator();
+        osc.type = 'sine';
+        const f = 90 + Math.random() * 120;
+        osc.frequency.setValueAtTime(f, t);
+        osc.frequency.linearRampToValueAtTime(f * (0.7 + Math.random() * 0.7), t + 2.2);
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.5, t + 0.7);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 2.6);
+        osc.connect(g).connect(master);
+        osc.start(t); osc.stop(t + 2.8);
+        entry.timer = setTimeout(phrase, 4000 + Math.random() * 9000);
+      };
+      entry.timer = setTimeout(phrase, Math.random() * 4000);
+    } else if (contact.kind === 'giant') {
+      // something enormous breathing in the dark
+      const groan = () => {
+        if (!alive) return;
+        const t = this.now();
+        const osc = this.ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(38, t);
+        osc.frequency.linearRampToValueAtTime(26, t + 3.5);
+        const lp = this.ctx.createBiquadFilter();
+        lp.type = 'lowpass'; lp.frequency.value = 120;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(0.65, t + 1.4);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 4);
+        osc.connect(lp).connect(g).connect(master);
+        osc.start(t); osc.stop(t + 4.2);
+        entry.timer = setTimeout(groan, 9000 + Math.random() * 14000);
+      };
+      entry.timer = setTimeout(groan, 2000 + Math.random() * 6000);
+    }
+
+    const stop0 = entry.stop;
+    entry.stop = () => { clearTimeout(entry.timer); stop0(); };
+    this.passive.set(contact, entry);
+    master.gain.linearRampToValueAtTime(1, this.now() + 1.5);
+  }
+
+  stopPassive(contact) {
+    const e = this.passive.get(contact);
+    if (e) { e.stop(); this.passive.delete(contact); }
+  }
+
+  // squid jetting right past you — a watery whoosh at its position
+  jet(contact) {
+    if (!this.ready) return;
+    const t = this.now();
+    const pan = this.pannerFor(contact, contact.pos);
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 0.7;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.Q.value = 2;
+    bp.frequency.setValueAtTime(400, t);
+    bp.frequency.exponentialRampToValueAtTime(1400, t + 0.35);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    src.connect(bp).connect(g).connect(pan);
+    src.start(t, Math.random(), 0.55);
+  }
+
+  // ------------------------------------------------------------ body sounds
+  bite(hit) {
+    if (!this.ready) return;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = hit ? 0.9 : 1.4;
+    const f = this.ctx.createBiquadFilter();
+    f.type = hit ? 'lowpass' : 'bandpass';
+    f.frequency.value = hit ? 700 : 2000; f.Q.value = 1;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(hit ? 0.8 : 0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + (hit ? 0.3 : 0.12));
+    src.connect(f).connect(g).connect(this.master);
+    src.start(t, Math.random(), 0.35);
+  }
+
+  breath() {
+    if (!this.ready) return;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 0.9;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 0.6;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.7, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 1.2);
+  }
+
+  // call every frame: heartbeat speeds up as oxygen falls
+  body(dt, o2Frac, speedFrac) {
+    if (!this.ready) return;
+    this.heartRate = 0.9 + (1 - o2Frac) * 2.2 + speedFrac * 0.5;
+    this.heartTimer -= dt * this.heartRate;
+    if (this.heartTimer <= 0) {
+      this.heartTimer = 1;
+      const t = this.now();
+      const lub = (at, f, v) => {
+        const osc = this.ctx.createOscillator();
+        osc.type = 'sine'; osc.frequency.value = f;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.0001, at);
+        g.gain.exponentialRampToValueAtTime(v, at + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, at + 0.12);
+        osc.connect(g).connect(this.master);
+        osc.start(at); osc.stop(at + 0.15);
+      };
+      const v = 0.08 + (1 - o2Frac) * 0.3;
+      lub(t, 55, v); lub(t + 0.18, 45, v * 0.7);
+    }
+  }
+}

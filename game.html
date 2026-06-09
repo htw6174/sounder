@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOUNDER — the hunt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600&family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: crosshair; }
+  #scene { position: fixed; inset: 0; display: block; }
+  .serif { font-family: 'Cormorant Garamond', Georgia, serif; }
+
+  #hud {
+    position: fixed; inset: 0; pointer-events: none;
+    color: #cfeaff; font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+
+  #depth {
+    position: fixed; right: 28px; top: 50%; transform: translateY(-50%);
+    text-align: right; font-size: 20px; letter-spacing: 0.15em;
+    color: #9fcbe8; text-shadow: 0 0 12px rgba(0,30,60,0.9);
+  }
+  #depth .big { font-size: 34px; color: #e6f6ff; }
+
+  #o2wrap {
+    position: fixed; left: 28px; top: 50%; transform: translateY(-50%);
+    width: 10px; height: 240px; border: 1px solid rgba(160,210,240,0.5);
+    border-radius: 6px; overflow: hidden;
+  }
+  #o2 {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 100%;
+    background: linear-gradient(to top, #2e7fb8, #9fdcff);
+    transition: height 0.3s linear;
+  }
+  #o2label {
+    position: fixed; left: 22px; top: calc(50% + 132px);
+    font-size: 14px; letter-spacing: 0.3em; color: #9fcbe8;
+  }
+
+  #score {
+    position: fixed; top: 20px; right: 28px;
+    font-size: 20px; letter-spacing: 0.2em; color: #cfeaff;
+  }
+
+  #zone {
+    position: fixed; top: 56px; left: 0; right: 0; text-align: center;
+    font-family: 'Cinzel', Georgia, serif;
+    font-size: 26px; letter-spacing: 0.5em; text-indent: 0.5em;
+    color: #dff3ff; opacity: 0; transition: opacity 2s ease;
+    text-shadow: 0 0 20px rgba(80,160,220,0.6);
+  }
+
+  #msg {
+    position: fixed; bottom: 96px; left: 0; right: 0; text-align: center;
+    font-size: 21px; font-style: italic; letter-spacing: 0.12em;
+    color: #bfe2f5; opacity: 0; transition: opacity 1s ease;
+    text-shadow: 0 0 14px rgba(0,20,40,0.9);
+  }
+
+  #controls {
+    position: fixed; bottom: 18px; left: 0; right: 0; text-align: center;
+    font-size: 14px; letter-spacing: 0.25em; color: rgba(160,205,235,0.55);
+    text-transform: uppercase;
+  }
+
+  /* click-to-start gate (also unlocks audio) */
+  #gate {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 1.2em;
+    background: radial-gradient(ellipse at 50% 40%, #07314f 0%, #021018 75%);
+    color: #dff3ff; text-align: center; cursor: pointer;
+    transition: opacity 1.2s ease;
+  }
+  #gate.gone { opacity: 0; pointer-events: none; }
+  #gate h2 { font-family: 'Cinzel', Georgia, serif; font-weight: 500; letter-spacing: 0.4em; text-indent: 0.4em; font-size: 30px; margin: 0; }
+  #gate p { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 19px; font-style: italic; max-width: 34em; line-height: 1.7; margin: 0; color: #a8d4ec; }
+  #gate .go { font-family: 'Cormorant Garamond', Georgia, serif; letter-spacing: 0.45em; text-indent: 0.45em; text-transform: uppercase; font-size: 16px; animation: breathe 3s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+  /* reticle */
+  #ret {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    width: 5px; height: 5px; border-radius: 50%;
+    background: rgba(200,235,255,0.5); box-shadow: 0 0 8px rgba(150,220,255,0.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="hud">
+  <div id="ret"></div>
+  <div id="depth"><span class="big" id="depthNum">0</span> m<br><span id="alt"></span></div>
+  <div id="o2wrap"><div id="o2"></div></div>
+  <div id="o2label">O₂</div>
+  <div id="score">∅</div>
+  <div id="zone"></div>
+  <div id="msg"></div>
+  <div id="controls">mouse steer · W swim · space click · hold&nbsp;C creak · F bite · surface to breathe</div>
+</div>
+
+<div id="gate">
+  <h2>THE HUNT</h2>
+  <p>You are a sperm whale. Your eyes are small and the squid are deep.
+     Click, and the world answers: near things answer quickly, far things late.
+     High voices are small or above you; low voices are large or below.
+     A shimmer is a thousand fish; a warm thump is family; a breath of static,
+     barely there — that is what you eat.
+     Learn the sound of everything while the light lasts. Then dive.</p>
+  <div class="go">click to wake</div>
+</div>
+
+<script type="importmap">
+  { "imports": { "three": "./three.module.js" } }
+</script>
+<script type="module" src="./game.js"></script>
+</body>
+</html>
