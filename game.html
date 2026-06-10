@@ -108,6 +108,11 @@
   #options h3 { font-family: 'Cinzel', Georgia, serif; font-weight: 500; letter-spacing: 0.35em; text-indent: 0.35em; font-size: 20px; margin: 0 0 1.6em; }
   #options label { display: block; text-align: left; font-size: 15px; letter-spacing: 0.18em; text-transform: uppercase; color: #9fcbe8; margin: 1.1em 0 0.3em; }
   #options input[type=range] { width: 100%; accent-color: #7fc4e8; }
+  #options .codas { margin-top: 1.6em; text-align: left; font-size: 14px; }
+  #options .ctitle { letter-spacing: 0.3em; text-indent: 0.3em; text-transform: uppercase; color: #9fcbe8; text-align: center; margin-bottom: 0.6em; font-size: 13px; }
+  #options .codas div { display: flex; justify-content: space-between; padding: 1px 0; }
+  #options .codas span { letter-spacing: 0.15em; text-transform: uppercase; font-size: 13px; color: #9fcbe8; }
+  #options .codas i { font-style: normal; color: #dff0fc; letter-spacing: 0.05em; }
   #options .resume {
     margin-top: 2em; letter-spacing: 0.4em; text-indent: 0.4em; text-transform: uppercase;
     font-size: 15px; color: #e8f6ff; cursor: pointer;
@@ -193,6 +198,18 @@
     <input type="range" id="opt-vol" min="0" max="100" value="90">
     <label>mouse sensitivity</label>
     <input type="range" id="opt-sens" min="5" max="50" value="21">
+    <label style="display:flex;align-items:center;gap:0.6em;cursor:pointer">
+      <input type="checkbox" id="opt-inv" style="accent-color:#7fc4e8"> invert look
+    </label>
+    <div class="codas">
+      <div class="ctitle">the codas</div>
+      <div><span>locate</span><i>&#9646; &nbsp; &#9646;&#9646;&#9646;</i></div>
+      <div><span>gather</span><i>&#9646;&#9646;&#9646;&#9646;&#9646;</i></div>
+      <div><span>hunt</span><i>&#9646;&#9646;&#9646; &nbsp; &#9646;</i></div>
+      <div><span>rest</span><i>&#9646; &nbsp;&nbsp; &#9646; &nbsp;&nbsp; &#9646;</i></div>
+      <div><span>corral</span><i>&#9646;&#9646; &nbsp; &#9646;&#9646;</i></div>
+      <div><span>name</span><i>&#9646; &nbsp; &#9646; &nbsp; &#9646;&#9646;&#9646;</i></div>
+    </div>
     <div class="resume" id="opt-resume">return to the water</div>
   </div>
 </div>

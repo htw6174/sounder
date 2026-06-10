@@ -31,8 +31,9 @@ const audio = new AudioEngine();
 // player options, persisted
 const opts = JSON.parse(localStorage.getItem('sounder-opts') || '{}');
 let sens = opts.sens ?? 0.0021;
+let invertY = opts.invertY ?? false;
 audio.setVolume(opts.vol ?? 0.9);
-function saveOpts() { localStorage.setItem('sounder-opts', JSON.stringify({ sens, vol: audio.vol })); }
+function saveOpts() { localStorage.setItem('sounder-opts', JSON.stringify({ sens, vol: audio.vol, invertY })); }
 
 // scratch objects for per-frame math
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
@@ -512,6 +513,9 @@ const optionsEl = document.getElementById('options');
   sn.value = Math.round(sens * 10000);
   vol.addEventListener('input', () => { audio.setVolume(vol.value / 100); saveOpts(); });
   sn.addEventListener('input', () => { sens = sn.value / 10000; saveOpts(); });
+  const inv = document.getElementById('opt-inv');
+  inv.checked = invertY;
+  inv.addEventListener('change', () => { invertY = inv.checked; saveOpts(); });
   document.getElementById('opt-resume').addEventListener('click', () => {
     try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch (e) {}
   });
@@ -613,7 +617,7 @@ addEventListener('mousemove', (e) => {
   }
   if (document.pointerLockElement !== canvas) return;
   euler.y -= e.movementX * sens;
-  euler.x = THREE.MathUtils.clamp(euler.x - e.movementY * sens, -1.45, 1.45);
+  euler.x = THREE.MathUtils.clamp(euler.x - e.movementY * sens * (invertY ? -1 : 1), -1.45, 1.45);
 });
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
@@ -1074,6 +1078,8 @@ function updateDebug(dt, depth, alt) {
 const clock = new THREE.Clock();
 let firstPing = false, creakTimer = 0, wasUnder = true;
 let songlineT = 75 + Math.random() * 60, heardSongline = false, heardChannel = false, sawNight = false;
+let saidNameFromAbove = false;
+const CALF_CEILING = 140;               // the calf's depth limit
 const CHANNEL_DEPTH = 580, CHANNEL_HALF = 70;   // the deep sound channel
 
 function lerpAngle(a, b, k) {
@@ -1171,6 +1177,7 @@ function tick() {
   }
 
   // ---- creak (rate = round-trip time; prey outranks fish for the lock)
+  const hadCreakTarget = lastCreakTarget;
   lastCreakTarget = null;
   if ((player.creaking || keys.KeyC) && started && !player.dead) {
     let target = null, bd = 90, school = null, sd = 90;
@@ -1191,7 +1198,10 @@ function tick() {
         else if (giant.pos.distanceTo(camera.position) < 240) giant.aggro += 0.03;
       }
     }
-    if (!target) creakTimer = 0;
+    if (!target) {
+      creakTimer = 0;
+      if (hadCreakTarget) audio.deadTick();   // the lock slipped away
+    }
   } else creakTimer = 0;
 
   // ---- contacts behavior
@@ -1215,16 +1225,50 @@ function tick() {
       }
     } else if (c.kind === 'whale') {
       if (c.follow) {
-        // the calf shadows her mother
+        // the calf: she shadows her mother — unless you linger shallow,
+        // and then she tags along with you, babbling
         const m = c.follow;
-        _v1.set(m.pos.x - Math.cos(m.heading) * 9 + Math.cos(m.heading + Math.PI/2) * 5,
-                m.pos.y - 2 + Math.sin(t * 0.4 + c.seed) * 1.2,
-                m.pos.z - Math.sin(m.heading) * 9 + Math.sin(m.heading + Math.PI/2) * 5);
+        const playerNear = camera.position.distanceTo(c.pos) < 70 && depth < 110 && under;
+        if (playerNear) c.curiousT = 14; else if (c.curiousT > 0) c.curiousT -= dt;
+        const tagging = c.curiousT > 0 && depth < 130;
+        if (tagging) {
+          _v1.copy(camera.position).addScaledVector(fwd, -7);
+          _v1.x += Math.sin(t * 0.5 + c.seed) * 4;
+          _v1.y = Math.max(_v1.y + 2, -CALF_CEILING);
+          _v1.z += Math.cos(t * 0.45 + c.seed) * 4;
+          c.babbleT = (c.babbleT ?? 6) - dt;
+          if (c.babbleT <= 0) {
+            c.babbleT = 9 + Math.random() * 8;
+            // half-learned codas: the name, with the rhythm not quite right
+            const wrong = CODAS.name.map(g0 => g0 * (0.7 + Math.random() * 0.7));
+            audio.coda(wrong, c);
+          }
+        } else {
+          _v1.set(m.pos.x - Math.cos(m.heading) * 9 + Math.cos(m.heading + Math.PI/2) * 5,
+                  m.pos.y - 2 + Math.sin(t * 0.4 + c.seed) * 1.2,
+                  m.pos.z - Math.sin(m.heading) * 9 + Math.sin(m.heading + Math.PI/2) * 5);
+        }
+        _v1.y = Math.max(_v1.y, -CALF_CEILING);          // she cannot follow you down
         _v2.subVectors(_v1, c.pos);
         const d = _v2.length();
         c.vel.lerp(_v2.normalize().multiplyScalar(Math.min(d * 0.8, 7)), dt * 2);
         c.pos.addScaledVector(c.vel, dt);
-        c.heading = lerpAngle(c.heading, m.heading, Math.min(dt * 2, 1));
+        if (c.pos.y < -CALF_CEILING) c.pos.y += (-CALF_CEILING - c.pos.y) * dt * 2;
+        c.heading = tagging ? lerpAngle(c.heading, -euler.y - Math.PI / 2, Math.min(dt, 1)) : lerpAngle(c.heading, m.heading, Math.min(dt * 2, 1));
+        // while you hunt the dark, now and then she says your name from above
+        if (depth > 300) {
+          c.nameT = (c.nameT ?? 50) - dt;
+          if (c.nameT <= 0) {
+            c.nameT = 80 + Math.random() * 60;
+            const pos = camera.position.clone()
+              .addScaledVector(c.pos.clone().sub(camera.position).normalize(), 160);
+            audio.coda(CODAS.name, c, pos);
+            if (!saidNameFromAbove) {
+              saidNameFromAbove = true;
+              setTimeout(() => say('far above, the calf says your name.', 6), 1800);
+            }
+          }
+        }
       } else if (c.mode === 'gather') {
         c.modeT -= dt;
         const az = Math.atan2(camera.position.z - c.pos.z, camera.position.x - c.pos.x);
@@ -1272,6 +1316,21 @@ function tick() {
     } else if (c.kind === 'giant') {
       giantBehavior(c, dt, t);
       updateArms(c, dt);
+      // once in a long while, in the dark, its eye catches what light there isn't
+      if (depth > 380 && Math.random() < dt * 0.045) {
+        const dG = c.pos.distanceTo(camera.position);
+        _v1.set(0, 0, -1).applyQuaternion(c.mesh.quaternion);          // its facing (arms-first)
+        _v2.subVectors(camera.position, c.pos).normalize();
+        if (dG < 220 && _v1.dot(_v2) > 0.86) {
+          const mat = new THREE.SpriteMaterial({ map: dotTexture(), color: 0x8fa8b8, transparent: true, opacity: 0.22, depthWrite: false, blending: THREE.AdditiveBlending });
+          const s = new THREE.Sprite(mat);
+          _v3.set(0.25 * c.size, 0.06 * c.size, -0.30 * c.size).applyQuaternion(c.mesh.quaternion);
+          s.position.copy(c.pos).add(_v3);
+          s.scale.setScalar(0.9);
+          scene.add(s);
+          flashes.push({ s, t: 0.35 });
+        }
+      }
     } else { // squid
       const d = c.pos.distanceTo(camera.position);
       if (d < 13 && c.jetT <= 0) startJet(c);

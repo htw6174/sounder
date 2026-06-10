@@ -431,6 +431,21 @@ export class AudioEngine {
     src.start(t, Math.random(), 0.55);
   }
 
+  // the lock is gone — one flat, dull tick
+  deadTick() {
+    if (!this.ready) return;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 0.5;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 420;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.22, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 0.06);
+  }
+
   // ------------------------------------------------------------ codas
   // gaps: seconds between clicks. contact null = your own voice (in-skull);
   // otherwise the answer arrives spatialized from the speaker.
@@ -438,6 +453,15 @@ export class AudioEngine {
     if (!this.ready) return;
     let t = this.now() + 0.02;
     const dest = contact ? this.pannerFor(contact, posOverride ?? contact.pos) : this.master;
+    // a speaking whale pauses its song — don't blur the rhythm
+    const passive = contact && this.passive.get(contact);
+    if (passive) {
+      const total = gaps.reduce((s, x) => s + x, 0) + 1.2;
+      const pg = passive.gain.gain;
+      pg.cancelScheduledValues(t);
+      pg.setValueAtTime(0.12, t);
+      pg.linearRampToValueAtTime(1, t + total + 1.5);
+    }
     for (const gap of gaps) {
       t += gap;
       const src = this.ctx.createBufferSource();
