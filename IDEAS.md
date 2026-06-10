@@ -22,7 +22,7 @@ cue that resolves it for free.
 
 ## Directions I want to explore
 
-### 1. The scattering layer and the clock ★ my top pick
+### 1. The scattering layer and the clock ★ my top pick — *built*
 
 The real ocean has a heartbeat: the **deep scattering layer** — a continent of
 small life that rises toward the surface every night and sinks back at dawn. It
@@ -75,7 +75,7 @@ groans from *you*. One scalar — local noise level — modifying both startle
 ranges and your own detection. Risk and cover from the same mechanic, and it
 finally gives the player a reason to care *where* sounds live.
 
-### 5. The calf wants to come
+### 5. The calf wants to come — *built*
 
 Real sperm whale calves can't dive deep — the pod babysits at the surface
 while mothers hunt. Lean in: linger shallow and she tags along, babbling
@@ -84,7 +84,7 @@ and she stops at her ceiling, circles, and now and then her name-coda follows
 you down into the dark. Say her name from 600 meters and she always answers.
 Nearly zero mechanics; possibly the most memorable thing in the game.
 
-### 6. Breach as the loudest word ★ easy win
+### 6. Breach as the loudest word ★ easy win — *built*
 
 The breach "juice" pass (spray, hang-beat, re-entry plume) — but tie it to
 function: a breach is the loudest sound a whale can make. Let a full breach
@@ -116,18 +116,24 @@ instead of chasing; corral ring tightens as you approach (they read your
 intent); a short "with-you" swim burst after any answer so the pod visibly
 reacts. HW has notes coming — hold here.
 
-## Small refinements (noticed while testing)
+## Small refinements — *all built* except the last
 
-- Duck the kin's ambient song while a coda answer is playing — they overlap
-  and can blur the rhythm you're trying to learn.
-- Creak lock has no "lost it" cue — one flat dead tick when the target leaves
-  range would close the loop.
-- The giant's eyes: a *very* rare faint glint, only when it is facing you —
-  feeds the snow-or-eyes paranoia without resolving it.
-- Coda reference on the options panel: rhythm notation, e.g. `LOCATE ▮ · ▮▮▮`,
-  for players returning after a week away.
-- Options: invert-Y toggle next to sensitivity.
-- Prey/terrain density should scale into the new 1000-radius world.
+- ~~Duck the kin's ambient song while a coda answer is playing~~ ✓
+- ~~Creak lost-lock dead tick~~ ✓
+- ~~The giant's rare eye glint, only when facing you~~ ✓ (abyss only, 0.22 opacity, don't tell the player)
+- ~~Coda rhythm chart on the options panel~~ ✓
+- ~~Invert-Y~~ ✓
+- Prey density scaling into the 1000-radius world — held: density interacts
+  with the day/night migration; tune both together after playtest.
+
+## Awaiting playtest (mechanics built blind — judge by ear/hand)
+
+- Day/night pacing: is 20 min right? Is night hunting too easy?
+- DSL crackle + phantom-bottom levels.
+- Breach-gather: does the boom feel earned? FOV pop too subtle/strong?
+- Calf babble frequency (every 9–17s while tagging) and name-from-above
+  cadence (~every 1.5–2.5 min below 300m): heartwarming or nagging?
+- Eye glint rate (~every 20s of being watched, abyss only).
 
 ## Format experiments the repo could host
 
