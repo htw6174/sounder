@@ -86,10 +86,33 @@
   .wopt small { display: block; text-transform: none; letter-spacing: 0.06em; text-indent: 0;
     font-style: italic; font-size: 13px; color: rgba(168,212,236,0.6); }
   .wopt.sel { color: #eef9ff; opacity: 1; text-shadow: 0 0 14px rgba(140,210,255,0.8); transform: scale(1.12); }
-  #w-locate { transform: translateY(-150px); } #w-locate.sel { transform: translateY(-150px) scale(1.12); }
-  #w-gather { transform: translate(170px, -10px); } #w-gather.sel { transform: translate(170px, -10px) scale(1.12); }
-  #w-hunt   { transform: translateY(125px); } #w-hunt.sel { transform: translateY(125px) scale(1.12); }
-  #w-name   { transform: translate(-170px, -10px); } #w-name.sel { transform: translate(-170px, -10px) scale(1.12); }
+  #w-locate { transform: translateY(-160px); } #w-locate.sel { transform: translateY(-160px) scale(1.12); }
+  #w-gather { transform: translate(160px, -80px); } #w-gather.sel { transform: translate(160px, -80px) scale(1.12); }
+  #w-hunt   { transform: translate(160px, 60px); } #w-hunt.sel { transform: translate(160px, 60px) scale(1.12); }
+  #w-rest   { transform: translateY(135px); } #w-rest.sel { transform: translateY(135px) scale(1.12); }
+  #w-corral { transform: translate(-160px, 60px); } #w-corral.sel { transform: translate(-160px, 60px) scale(1.12); }
+  #w-name   { transform: translate(-160px, -80px); } #w-name.sel { transform: translate(-160px, -80px) scale(1.12); }
+
+  /* options (esc) */
+  #options {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(2, 12, 22, 0.72); z-index: 20;
+    font-family: 'Cormorant Garamond', Georgia, serif; color: #cfeaff;
+  }
+  #options.on { display: flex; }
+  #options .panel {
+    width: 360px; padding: 34px 42px; text-align: center;
+    border: 1px solid rgba(150,210,240,0.25); border-radius: 8px;
+    background: rgba(4, 20, 34, 0.85);
+  }
+  #options h3 { font-family: 'Cinzel', Georgia, serif; font-weight: 500; letter-spacing: 0.35em; text-indent: 0.35em; font-size: 20px; margin: 0 0 1.6em; }
+  #options label { display: block; text-align: left; font-size: 15px; letter-spacing: 0.18em; text-transform: uppercase; color: #9fcbe8; margin: 1.1em 0 0.3em; }
+  #options input[type=range] { width: 100%; accent-color: #7fc4e8; }
+  #options .resume {
+    margin-top: 2em; letter-spacing: 0.4em; text-indent: 0.4em; text-transform: uppercase;
+    font-size: 15px; color: #e8f6ff; cursor: pointer;
+    animation: breathe 3s ease-in-out infinite;
+  }
 
   /* the giant's grip — toothed suckers, shown as pain */
   .grip {
@@ -147,19 +170,32 @@
   <div id="score">∅</div>
   <div id="zone"></div>
   <div id="msg"></div>
-  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · hold E to call · F bite · ` debug</div>
+  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · hold E to call · F bite · esc options · ` debug</div>
 </div>
 
 <div id="wheel">
   <div class="wopt" id="w-locate">Locate<small>where are you?</small></div>
   <div class="wopt" id="w-gather">Gather<small>come to me</small></div>
   <div class="wopt" id="w-hunt">Hunt<small>drive my prey</small></div>
+  <div class="wopt" id="w-rest">Rest<small>as you were</small></div>
+  <div class="wopt" id="w-corral">Corral<small>circle my prey</small></div>
   <div class="wopt" id="w-name">Name<small>it's me</small></div>
 </div>
 <div class="grip" id="gripL"></div>
 <div class="grip" id="gripR"></div>
 <div class="grip" id="gripT"></div>
 <div class="grip" id="gripB"></div>
+
+<div id="options">
+  <div class="panel">
+    <h3>SETTLE</h3>
+    <label>volume</label>
+    <input type="range" id="opt-vol" min="0" max="100" value="90">
+    <label>mouse sensitivity</label>
+    <input type="range" id="opt-sens" min="5" max="50" value="21">
+    <div class="resume" id="opt-resume">return to the water</div>
+  </div>
+</div>
 
 <div id="gate">
   <h2>THE HUNT</h2>

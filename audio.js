@@ -25,6 +25,7 @@ TIMBRES.giant = { ...TIMBRES.squid, base: 700, decay: 0.3, gain: 0.6 };
 export class AudioEngine {
   constructor() {
     this.ready = false;
+    this.vol = 0.9;
     this.panners = new Map();     // key -> PannerNode
     this.passive = new Map();     // contact -> {gain, stop()}
     this.heartTimer = 0;
@@ -37,7 +38,7 @@ export class AudioEngine {
     this.master.threshold.value = -18;
     this.master.ratio.value = 6;
     this.out = ctx.createGain();
-    this.out.gain.value = 0.9;
+    this.out.gain.value = this.vol;
     this.master.connect(this.out).connect(ctx.destination);
 
     // shared noise buffer
@@ -88,6 +89,11 @@ export class AudioEngine {
     if (!this.ready) return;
     this.surfGain.gain.value = 0.07 * shallowFrac;
     this.rumbleGain.gain.value = 0.09 * deepFrac;
+  }
+
+  setVolume(v) {
+    this.vol = v;
+    if (this.out) this.out.gain.value = v;
   }
 
   now() { return this.ctx.currentTime; }
