@@ -1023,7 +1023,7 @@ function drawLungs(t) {
   const r = Math.round(110 + 145 * panicU), gc = Math.round(190 - 110 * panicU), b = Math.round(235 - 165 * panicU);
   const a = 0.25 + 0.45 * panicU;
   nctx.save();
-  nctx.translate(W / 2, H - 96);
+  nctx.translate(W / 2, H - 192);
   nctx.scale(scale, scale);
   nctx.fillStyle = `rgba(${r},${gc},${b},${a})`;
   nctx.shadowColor = `rgba(${r},${gc},${b},0.8)`;
