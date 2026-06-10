@@ -1029,6 +1029,7 @@ function updateDebug(dt, depth, alt) {
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 let firstPing = false, creakTimer = 0, wasUnder = true;
+let songlineT = 75 + Math.random() * 60, heardSongline = false;
 
 function lerpAngle(a, b, k) {
   return a + wrapPi(b - a) * k;
@@ -1286,6 +1287,26 @@ function tick() {
     audio.updateListener(camera);
     audio.body(dt, player.o2);
     audio.ambient(under ? THREE.MathUtils.clamp(1 - depth / 15, 0, 1) : 1, black);
+    // the songline: another clan, somewhere beyond the dark
+    songlineT -= dt;
+    if (songlineT <= 0) {
+      songlineT = 110 + Math.random() * 130;
+      if (under && depth > 25) {
+        const az = Math.random() * Math.PI * 2;
+        // virtual source sits nearer than it "is" — the panner carries the
+        // bearing while the muffling and wash carry the distance
+        const R = 130 + Math.random() * 60;
+        audio.songline({
+          x: camera.position.x + Math.cos(az) * R,
+          y: THREE.MathUtils.clamp(camera.position.y + (Math.random() - 0.5) * 70, -800, -40),
+          z: camera.position.z + Math.sin(az) * R,
+        });
+        if (!heardSongline) {
+          heardSongline = true;
+          setTimeout(() => say('another clan, somewhere beyond the dark. you don\'t know their words.', 6), 2500);
+        }
+      }
+    }
   }
 
   // ---- HUD

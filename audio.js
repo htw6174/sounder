@@ -456,6 +456,48 @@ export class AudioEngine {
     }
   }
 
+  // codas from a clan you have never met, somewhere beyond the dark.
+  // distance has taken the highs; only the rhythm survives.
+  songline(pos) {
+    if (!this.ready) return;
+    const FOREIGN = [
+      [0, 0.1, 0.1, 0.1, 0.1, 0.1],          // six regular
+      [0, 0.45, 0.1],                         // long-short
+      [0, 0.15, 0.15, 0.45, 0.15, 0.15],     // paired triplets
+      [0, 0.08, 0.08, 0.08, 0.35, 0.35],     // quick three, slow two
+    ];
+    const pattern = FOREIGN[Math.floor(Math.random() * FOREIGN.length)];
+    const pan = this.pannerFor({ key: 'songline' }, pos);
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 750;
+    lp.connect(pan);
+    let t = this.now() + 0.05;
+    const reps = 1 + Math.floor(Math.random() * 2);
+    for (let r = 0; r < reps; r++) {
+      for (const gap of pattern) {
+        t += gap;
+        const src = this.ctx.createBufferSource();
+        src.buffer = this.noise; src.playbackRate.value = 1.0;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass'; bp.frequency.value = 600; bp.Q.value = 1.2;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.85, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+        src.connect(bp).connect(g).connect(lp);
+        src.start(t, Math.random(), 0.08);
+        const th = this.ctx.createOscillator();
+        th.type = 'sine'; th.frequency.value = 90;
+        const tg = this.ctx.createGain();
+        tg.gain.setValueAtTime(0.45, t);
+        tg.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+        th.connect(tg).connect(lp);
+        th.start(t); th.stop(t + 0.11);
+      }
+      t += 1.4;                                // a breath between repetitions
+    }
+    setTimeout(() => lp.disconnect(), (t - this.now() + 1) * 1000);
+  }
+
   // the giant takes hold — wet, low, final
   seize() {
     if (!this.ready) return;
