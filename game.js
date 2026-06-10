@@ -253,7 +253,7 @@ function makeWhaleMesh() {
   for (const s of [-1,1]) {
     const flGeo = new THREE.SphereGeometry(1, 10, 7);
     flGeo.scale(1.7, 0.14, 0.75);
-    flGeo.rotateY(s * -0.55);
+    flGeo.rotateY(s * 0.55);
     flGeo.translate(-6.65, 0, s * 1.15);   // baked: flukes live in body space
     g.add(new THREE.Mesh(flGeo, mat));
   }
