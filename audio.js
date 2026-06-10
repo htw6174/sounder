@@ -191,7 +191,8 @@ export class AudioEngine {
     // mild extra spreading loss on top of the panner's — slow by design:
     // range is told by DELAY, not by silence
     const loss = 1 / (1 + dist * 0.004);
-    const gain = T.gain * loss * Math.min(Math.pow(size, 0.8), 3) * (0.75 + 0.25 * front01);
+    let gain = T.gain * loss * Math.min(Math.pow(size, 0.8), 3) * (0.75 + 0.25 * front01);
+    if (contact.kind === 'whale') gain *= 0.3 + 0.7 * Math.min(dist / 150, 1);
 
     const pan = this.pannerFor(contact, contact.pos);
     const lp = this.ctx.createBiquadFilter();
@@ -430,10 +431,10 @@ export class AudioEngine {
   // ------------------------------------------------------------ codas
   // gaps: seconds between clicks. contact null = your own voice (in-skull);
   // otherwise the answer arrives spatialized from the speaker.
-  coda(gaps, contact = null) {
+  coda(gaps, contact = null, posOverride = null) {
     if (!this.ready) return;
     let t = this.now() + 0.02;
-    const dest = contact ? this.pannerFor(contact, contact.pos) : this.master;
+    const dest = contact ? this.pannerFor(contact, posOverride ?? contact.pos) : this.master;
     for (const gap of gaps) {
       t += gap;
       const src = this.ctx.createBufferSource();
@@ -458,7 +459,7 @@ export class AudioEngine {
 
   // codas from a clan you have never met, somewhere beyond the dark.
   // distance has taken the highs; only the rhythm survives.
-  songline(pos) {
+  songline(pos, clarity = 0) {
     if (!this.ready) return;
     const FOREIGN = [
       [0, 0.1, 0.1, 0.1, 0.1, 0.1],          // six regular
@@ -469,7 +470,7 @@ export class AudioEngine {
     const pattern = FOREIGN[Math.floor(Math.random() * FOREIGN.length)];
     const pan = this.pannerFor({ key: 'songline' }, pos);
     const lp = this.ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 750;
+    lp.type = 'lowpass'; lp.frequency.value = 750 + clarity * 2400;
     lp.connect(pan);
     let t = this.now() + 0.05;
     const reps = 1 + Math.floor(Math.random() * 2);
@@ -481,7 +482,7 @@ export class AudioEngine {
         const bp = this.ctx.createBiquadFilter();
         bp.type = 'bandpass'; bp.frequency.value = 600; bp.Q.value = 1.2;
         const g = this.ctx.createGain();
-        g.gain.setValueAtTime(0.85, t);
+        g.gain.setValueAtTime(0.85 * (1 + clarity * 0.6), t);
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
         src.connect(bp).connect(g).connect(lp);
         src.start(t, Math.random(), 0.08);
@@ -496,6 +497,37 @@ export class AudioEngine {
       t += 1.4;                                // a breath between repetitions
     }
     setTimeout(() => lp.disconnect(), (t - this.now() + 1) * 1000);
+  }
+
+  startStrain() {
+    if (!this.ready || this.strainNodes) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.loop = true; src.playbackRate.value = 0.35;
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 600; bp.Q.value = 9;
+    const g = this.ctx.createGain(); g.gain.value = 0;
+    const pan = this.pannerFor({ key: 'strain' }, { x: 0, y: 0, z: 0 });
+    src.connect(bp).connect(g).connect(pan);
+    src.start();
+    const lfo = this.ctx.createOscillator(); lfo.frequency.value = 2.3;
+    const la = this.ctx.createGain(); la.gain.value = 70;
+    lfo.connect(la).connect(bp.frequency); lfo.start();
+    this.strainNodes = { src, bp, g, lfo };
+    g.gain.linearRampToValueAtTime(0.45, this.now() + 0.3);
+  }
+
+  updateStrain(pos, aim01) {
+    if (!this.strainNodes) return;
+    this.pannerFor({ key: 'strain' }, pos);
+    this.strainNodes.bp.frequency.value = 550 + aim01 * 650;
+    this.strainNodes.g.gain.value = 0.38 + aim01 * 0.35;
+  }
+
+  stopStrain() {
+    if (!this.strainNodes) return;
+    const n = this.strainNodes; this.strainNodes = null;
+    try { n.src.stop(); n.lfo.stop(); } catch (e) {}
+    this.dropPanner({ key: 'strain' });
   }
 
   // the giant takes hold — wet, low, final
@@ -576,9 +608,10 @@ export class AudioEngine {
 
   // call every frame: the heart is silent until the tank runs low —
   // it pounds inside your skull (deliberately non-spatial)
-  body(dt, o2Frac) {
-    if (!this.ready || o2Frac >= 0.10) return;
-    const urgency = (0.10 - o2Frac) / 0.10;          // 0..1 as o2 10% → 0
+  body(dt, o2Frac, panic = 0) {
+    if (!this.ready) return;
+    const urgency = Math.max(o2Frac < 0.10 ? (0.10 - o2Frac) / 0.10 : 0, panic);
+    if (urgency <= 0) return;
     const rate = 1.2 + urgency * 1.5;
     this.heartTimer -= dt * rate;
     if (this.heartTimer <= 0) {

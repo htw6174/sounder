@@ -435,8 +435,9 @@ function addSquid(depth, opts = {}) {
     vel: new THREE.Vector3(), size, jetT: 0,
     homeDepth: -depth, seed: Math.random()*100,
     passiveRange: giantFlag ? 600 : 0,
-    aggro: 0, state: 'lurk', gripSide: null, faceProgress: 0, faced: false,
+    aggro: 0, state: 'lurk', gripSide: null,
     windT: 4, modeT: 0, struggle: 0, tentaclesLeft: 2, latchArm: null,
+    latchAnchor: new THREE.Vector3(),
   };
   buildArms(c);
   contacts.push(c);
@@ -566,8 +567,13 @@ function emitCall(name) {
     }
     if (answers) {
       setTimeout(() => {
-        audio.pannerFor(k, k.pos);
-        audio.coda(CODAS[name], k);
+        let pos = k.pos;
+        const dd = k.pos.distanceTo(camera.position);
+        if (dd > 350) {
+          pos = camera.position.clone()
+            .addScaledVector(k.pos.clone().sub(camera.position).normalize(), 170);
+        }
+        audio.coda(CODAS[name], k, pos);
       }, (0.8 + i * 0.9 + extraWait + (2 * d) / SOUND_SPEED) * 1000);
     }
     if (isCalf) return;                               // she only answers; she stays with mother
@@ -687,9 +693,13 @@ function bite() {
 
   // the giant first: severing a latched arm, or the final blow
   if (contacts.includes(giant)) {
-    if (giant.state === 'latch' && giant.faced) {
-      severTentacle(giant);
-      audio.bite(true);
+    if (giant.state === 'latch') {
+      const to = giant.latchAnchor.clone().sub(camera.position);
+      const dA = to.length();
+      if (dA < 15 && to.normalize().dot(fwd) > 0.90) {
+        severTentacle(giant);
+        audio.bite(true);
+      } else audio.bite(false);                      // snapped at dark water
       return;
     }
     if (giant.tentaclesLeft <= 0 && giant.state !== 'dead') {
@@ -748,7 +758,7 @@ function severTentacle(c) {
   if (arm) arm.gone = true;
   c.tentaclesLeft--;
   c.latchArm = null;
-  c.faced = false;
+  audio.stopStrain();
   c.state = 'flee'; c.modeT = 9;
   c.aggro = 0;                                       // a grab broken resets its nerve
   setGripOverlay(null);
@@ -818,29 +828,29 @@ function giantBehavior(c, dt, t) {
     // anchored, hauling you in by one long arm
     c.vel.multiplyScalar(Math.pow(0.2, dt));
     c.pos.addScaledVector(c.vel, dt);
-    _v1.copy(toPlayer).normalize().multiplyScalar(-7.5);   // pull: toward the giant
+    _v1.copy(toPlayer).normalize().multiplyScalar(-6.5);   // pull: toward the giant
     player.vel.addScaledVector(_v1, dt);
     player.o2 -= dt / 70;
-    if (d > 60) {                                    // hauled beyond its reach: it loses hold
-      c.state = 'stalk'; c.windT = 3; c.latchArm = null; c.faced = false;
+    if (d > 55) {                                    // hauled beyond its reach: it loses hold
+      c.state = 'stalk'; c.windT = 3; c.latchArm = null;
       setGripOverlay(null);
+      audio.stopStrain();
       say('the arm slips loose.', 3);
     }
-    const dYaw = euler.y - prevYaw, dPitch = euler.x - prevPitch;
-    let toward = 0;
-    if (c.gripSide === 'L') toward = dYaw;
-    else if (c.gripSide === 'R') toward = -dYaw;
-    else if (c.gripSide === 'T') toward = dPitch;
-    else toward = -dPitch;
-    if (toward > 0) c.faceProgress += toward;
-    if (!c.faced && c.faceProgress > 0.4) {
-      c.faced = true;
-      say('the arm strains before you — BITE IT OFF', 3);
-    }
+    // the strain creaks from the arm itself — aim at the sound
+    const arm = c.arms[c.latchArm];
+    if (arm) c.latchAnchor.copy(arm.pts[Math.max(arm.segs - 2, 0)]);   // mid-arm: the tip converges on you
+    _v2.subVectors(c.latchAnchor, camera.position);
+    const dA = _v2.length();
+    _v2.normalize();
+    const fwdNow = camera.getWorldDirection(_v4);
+    const aim01 = THREE.MathUtils.clamp((_v2.dot(fwdNow) - 0.6) / 0.38, 0, 1);
+    audio.updateStrain(c.latchAnchor, aim01);
     if (d < 14) {
       // dragged into the crown of short arms
       c.state = 'grasp'; c.struggle = 0;
       setGripOverlay('ALL');
+      audio.stopStrain();
       audio.seize();
       say('GRASPED — thrash to break free', 4);
     }
@@ -884,12 +894,11 @@ function beginLatch(c) {
   c.latchArm = !c.arms[8].gone ? 8 : (!c.arms[9].gone ? 9 : null);
   if (c.latchArm === null) { c.tentaclesLeft = 0; return; }
   c.state = 'latch';
-  c.faceProgress = 0;
-  c.faced = false;
   c.gripSide = pickGripSide(c);
   setGripOverlay(c.gripSide);
   audio.seize();
-  say(`a long arm takes hold from the ${SIDE_WORDS[c.gripSide]} — turn and bite it off`, 4.5);
+  audio.startStrain();
+  say(`a long arm takes hold from the ${SIDE_WORDS[c.gripSide]} — find the strain and bite it off`, 4.5);
 }
 
 // ------------------------------------------------------------------ HUD
@@ -967,16 +976,23 @@ function drawNav(dark) {
 }
 
 // the body's gauge: lungs that drain from blue to red. imprecise on purpose.
+// they pound when the giant has you.
 function drawLungs(t) {
   if (!started || camera.position.y > 0) return;
-  const H = nav.height;
+  const W = nav.width, H = nav.height;
   const u = 1 - player.o2;
-  let scale = 1;
-  if (player.o2 < 0.10) scale = 1 + 0.10 * Math.sin(t * 8);
-  const r = Math.round(110 + 145 * u), gc = Math.round(190 - 110 * u), b = Math.round(235 - 165 * u);
-  const a = 0.25 + 0.45 * u;
+  const giantAlive = contacts.includes(giant);
+  const latched = giantAlive && giant.state === 'latch';
+  const grasped = giantAlive && giant.state === 'grasp';
+  let scale = 1.7;
+  if (grasped) scale *= 1 + 0.30 * Math.sin(t * 16) + (Math.random() - 0.5) * 0.07;
+  else if (latched) scale *= 1 + 0.15 * Math.sin(t * 9);
+  else if (player.o2 < 0.10) scale *= 1 + 0.10 * Math.sin(t * 8);
+  const panicU = Math.max(u, grasped ? 0.75 : latched ? 0.45 : 0);
+  const r = Math.round(110 + 145 * panicU), gc = Math.round(190 - 110 * panicU), b = Math.round(235 - 165 * panicU);
+  const a = 0.25 + 0.45 * panicU;
   nctx.save();
-  nctx.translate(46, H / 2);
+  nctx.translate(W / 2, H - 96);
   nctx.scale(scale, scale);
   nctx.fillStyle = `rgba(${r},${gc},${b},${a})`;
   nctx.shadowColor = `rgba(${r},${gc},${b},0.8)`;
@@ -1029,7 +1045,8 @@ function updateDebug(dt, depth, alt) {
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 let firstPing = false, creakTimer = 0, wasUnder = true;
-let songlineT = 75 + Math.random() * 60, heardSongline = false;
+let songlineT = 75 + Math.random() * 60, heardSongline = false, heardChannel = false;
+const CHANNEL_DEPTH = 580, CHANNEL_HALF = 70;   // the deep sound channel
 
 function lerpAngle(a, b, k) {
   return a + wrapPi(b - a) * k;
@@ -1216,6 +1233,11 @@ function tick() {
         c.vel.z += Math.cos(t*0.27 + c.seed) * dt * 0.8;
       }
       c.vel.y *= Math.pow(0.5, dt);
+      const hc = Math.hypot(c.pos.x, c.pos.z);
+      if (hc > 480) {                       // drift home; the herd is the terrain
+        c.vel.x -= (c.pos.x / hc) * dt * 3;
+        c.vel.z -= (c.pos.z / hc) * dt * 3;
+      }
       c.pos.addScaledVector(c.vel, dt);
       faceVelocity(c, dt, 3.5);
       updateArms(c, dt);
@@ -1285,22 +1307,30 @@ function tick() {
   // ---- audio frame work
   if (started) {
     audio.updateListener(camera);
-    audio.body(dt, player.o2);
+    const giantHold = contacts.includes(giant) ? (giant.state === 'grasp' ? 1 : giant.state === 'latch' ? 0.5 : 0) : 0;
+    audio.body(dt, player.o2, giantHold);
     audio.ambient(under ? THREE.MathUtils.clamp(1 - depth / 15, 0, 1) : 1, black);
-    // the songline: another clan, somewhere beyond the dark
-    songlineT -= dt;
+    // the songline: another clan, somewhere beyond the dark.
+    // in the deep sound channel the sea is a waveguide — voices arrive
+    // clearer and far more often there.
+    const channel01 = THREE.MathUtils.clamp(1 - Math.abs(depth - CHANNEL_DEPTH) / CHANNEL_HALF, 0, 1);
+    if (channel01 > 0.5 && !heardChannel) {
+      heardChannel = true;
+      say('a seam in the sea — sound bends here, and carries forever.', 6);
+    }
+    songlineT -= dt * (1 + channel01 * 5);          // the channel teems with voices
     if (songlineT <= 0) {
       songlineT = 110 + Math.random() * 130;
       if (under && depth > 25) {
         const az = Math.random() * Math.PI * 2;
         // virtual source sits nearer than it "is" — the panner carries the
         // bearing while the muffling and wash carry the distance
-        const R = 130 + Math.random() * 60;
+        const R = 130 + Math.random() * 60 - channel01 * 40;
         audio.songline({
           x: camera.position.x + Math.cos(az) * R,
           y: THREE.MathUtils.clamp(camera.position.y + (Math.random() - 0.5) * 70, -800, -40),
           z: camera.position.z + Math.sin(az) * R,
-        });
+        }, channel01);
         if (!heardSongline) {
           heardSongline = true;
           setTimeout(() => say('another clan, somewhere beyond the dark. you don\'t know their words.', 6), 2500);
@@ -1354,6 +1384,7 @@ function blackout() {
     giant.state = 'lurk'; giant.aggro = 0; giant.latchArm = null;
     giant.pos.set(120, -770, -80);
     setGripOverlay(null);
+    audio.stopStrain();
   }
   setTimeout(() => {
     camera.position.set(0, -2, 0);

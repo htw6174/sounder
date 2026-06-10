@@ -41,25 +41,28 @@ breathes. Sketch: global `hour`; `c.homeDepth = lerp(dayDepth, nightDepth,
 night01)`; one new ambience band; surface light dims at night (the sunlit zone
 itself becomes the twilight — navigation by ear up top, too).
 
-### 2. Terrain you can hear
+### 2. ~~Terrain you can hear~~ — PARKED (HW)
 
-The boundary echo is the game's most elegant teacher — every player learns
-depth-by-delay without a tutorial. Give it geography: seamounts, a ridge, one
-deep canyon that funnels toward the giant's ground. On each ping, cast a few
-horizontal rays against the heightfield and return rock echoes per bearing —
-an acoustic horizon. A canyon wall reads as a fast hard answer on your left;
-open water is a long silence on your right. Navigation becomes sounding in the
-truest sense, and the abyss gets landmarks without a single visible feature.
+Direction from playtest: the open ocean is the underexplored thing — **the
+shifting arrangement of creatures IS the terrain.** Lean into that instead:
+the prey field as living geography (layers, drifts, migrations — see #1),
+the pod as your landmark, locate-codas as your bearings. Squid now steer
+gently back toward the inhabited column so the herd holds its shape, and
+distant kin answer locate through a stand-in position that carries true
+bearing without the distance burying it — you can always find home by voice.
 
-(With the world boundary now at 1000, prey spawning and terrain should grow to
-fill it — the flat plain is the emptiest part of the game.)
-
-### 3. The songline — *built, this commit*
+### 3. The songline — *built*, now with the deep sound channel
 
 Every few minutes, very far off, codas from a clan you've never met: patterns
 that aren't on your wheel, in a dialect you don't speak, too distant to answer.
-Real sperm whale clans have dialects; the ocean carries voices for miles.
-Costs nothing, signifies everything: the world is bigger than your pod.
+
+HW asked whether this was the real acoustic waveguide — it is now: the **SOFAR
+channel** (sound speed hits a minimum where falling temperature hands off to
+rising pressure; sound refracts back toward the axis from both sides and
+carries for thousands of kilometers — whalers' explosives were heard across
+basins, and fin whales may use it to call across oceans). In game: hold ~580m
+and the sea becomes an antenna — songlines arrive several times more often,
+closer-sounding and brighter. A depth you visit to *listen*.
 
 Someday, maybe: you can answer anyway. For a long time, nothing happens.
 
@@ -101,6 +104,17 @@ justifies itself.
 - **No health bar.** Breath is the only currency. Pain is light, not numbers.
 - **No always-on echo visualization.** The sunlit calibration flashes earn
   their place by *teaching*; in the deep, sound must stand alone.
+
+## Open question — hunting alongside kin (HW thinking overnight)
+
+The codas command well but don't *feel* like hunting together yet. Their click
+returns being as loud as prey was half the problem — kin echoes now duck hard
+at close range (familiar voices; the mind files them under "us"). The deeper
+issue is choreography: whales that pace the player without follower hacks.
+Ideas to weigh: kin pre-position at your creak-target's depth during Hunt
+instead of chasing; corral ring tightens as you approach (they read your
+intent); a short "with-you" swim burst after any answer so the pod visibly
+reacts. HW has notes coming — hold here.
 
 ## Small refinements (noticed while testing)
 
