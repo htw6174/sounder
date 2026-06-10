@@ -169,7 +169,7 @@ function makeWhaleMesh() {
 }
 
 function makeSquidMesh(size) {
-  const mat = new THREE.MeshBasicMaterial({ color: 0x6d4b56 });
+  const mat = new THREE.MeshBasicMaterial({ color: 0x2e2531 });
   const g = new THREE.Group();
   const mantle = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.4, 10), mat);
   mantle.rotation.x = Math.PI/2; mantle.position.z = -0.6; g.add(mantle);
@@ -253,6 +253,7 @@ const player = {
 };
 const euler = new THREE.Euler(0, 0, 0, 'YXZ');
 const keys = {};
+let debugOpen = false, gizmos = false, fpsEma = 60;
 
 const gate = document.getElementById('gate');
 let started = false;
@@ -279,6 +280,17 @@ addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') e.preventDefault();      // space = rise
   if (e.code === 'KeyF') bite();
+  if (e.code === 'Backquote') {
+    debugOpen = !debugOpen;
+    debugEl.style.display = debugOpen ? 'block' : 'none';
+  }
+  if (debugOpen) {
+    if (e.code === 'KeyG') gizmos = !gizmos;
+    if (e.code === 'KeyO') player.o2 = 1;
+    if (e.code === 'Digit1') { camera.position.set(0, -2, 0); player.vel.set(0,0,0); }
+    if (e.code === 'Digit2') { camera.position.set(0, -250, 0); player.vel.set(0,0,0); }
+    if (e.code === 'Digit3') { camera.position.set(100, -740, -60); player.vel.set(0,0,0); }
+  }
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 addEventListener('mousedown', (e) => {
@@ -294,7 +306,7 @@ const flashes = [];
 function ping() {
   if (!started || player.pingCd > 0 || player.dead) return;
   player.pingCd = 0.9;
-  const obs = { pos: camera.position, vel: player.vel };
+  const obs = { pos: camera.position, vel: player.vel, fwd: camera.getWorldDirection(new THREE.Vector3()) };
   const depth = -camera.position.y;
   let nearest = null, nearestD = 1e9;
   for (const c of contacts) {
@@ -439,6 +451,63 @@ function drawNav(dark) {
   }
 }
 
+// the body's gauge: lungs that drain from blue to red. imprecise on purpose.
+function drawLungs(t) {
+  if (!started || camera.position.y > 0) return;
+  const H = nav.height;
+  const u = 1 - player.o2;
+  let scale = 1;
+  if (player.o2 < 0.10) scale = 1 + 0.10 * Math.sin(t * 8);   // pounding with the heart
+  const r = Math.round(110 + 145 * u), gc = Math.round(190 - 110 * u), b = Math.round(235 - 165 * u);
+  const a = 0.25 + 0.45 * u;
+  nctx.save();
+  nctx.translate(46, H / 2);
+  nctx.scale(scale, scale);
+  nctx.fillStyle = `rgba(${r},${gc},${b},${a})`;
+  nctx.shadowColor = `rgba(${r},${gc},${b},0.8)`;
+  nctx.shadowBlur = 12;
+  for (const s of [-1, 1]) {
+    nctx.beginPath();
+    nctx.ellipse(s * 8, 5, 6.5, 12, s * 0.3, 0, Math.PI * 2);
+    nctx.fill();
+  }
+  nctx.strokeStyle = `rgba(${r},${gc},${b},${a})`;
+  nctx.lineWidth = 2.5;
+  nctx.beginPath(); nctx.moveTo(0, -16); nctx.lineTo(0, -4); nctx.stroke();
+  nctx.restore();
+}
+
+const GIZMO_COLORS = { school: '#8fd0ff', squid: '#ff9fb0', giant: '#ff5560', whale: '#ffd28f' };
+const gizmoV = new THREE.Vector3();
+function drawGizmos() {
+  const W = nav.width, H = nav.height;
+  nctx.font = '12px monospace';
+  nctx.textAlign = 'left';
+  for (const c of contacts) {
+    gizmoV.copy(c.pos).project(camera);
+    if (gizmoV.z > 1 || gizmoV.z < -1) continue;
+    const x = (gizmoV.x * 0.5 + 0.5) * W, y = (-gizmoV.y * 0.5 + 0.5) * H;
+    if (x < -50 || x > W + 50 || y < -50 || y > H + 50) continue;
+    const col = GIZMO_COLORS[c.kind] ?? '#fff';
+    nctx.strokeStyle = col;
+    nctx.lineWidth = 1;
+    nctx.beginPath(); nctx.arc(x, y, 10, 0, Math.PI * 2); nctx.stroke();
+    nctx.fillStyle = col;
+    nctx.fillText(`${c.kind} ${Math.round(c.pos.distanceTo(camera.position))}m`, x + 14, y + 4);
+  }
+}
+
+const debugEl = document.getElementById('debug');
+function updateDebug(dt, depth, alt) {
+  const p = camera.position;
+  debugEl.innerHTML =
+    `pos ${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}<br>` +
+    `depth ${depth.toFixed(1)} · alt ${alt.toFixed(1)}<br>` +
+    `o2 ${(player.o2 * 100).toFixed(1)}% · vel ${player.vel.length().toFixed(2)}<br>` +
+    `contacts ${contacts.length} · panners ${audio.panners.size} · fps ${fpsEma.toFixed(0)}<br>` +
+    `[G] gizmos ${gizmos ? 'ON' : 'off'} · [O] refill O₂ · [1/2/3] teleport`;
+}
+
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 let firstPing = false, creakTimer = 0, wasUnder = true;
@@ -506,7 +575,7 @@ function tick() {
     creakTimer -= dt;
     if (creakTimer <= 0 && target) {
       creakTimer = Math.max((2 * bd) / SOUND_SPEED, 0.045);
-      audio.creakEcho(target, { pos: camera.position, vel: player.vel });
+      audio.creakEcho(target, { pos: camera.position, vel: player.vel, fwd });
     }
     if (!target) creakTimer = 0;
   } else creakTimer = 0;
@@ -541,14 +610,14 @@ function tick() {
     }
 
     // passive sound management
-    if (started && c.passiveRange) {
+    if (started && (c.passiveRange || c.kind === 'school')) {
       const d = c.pos.distanceTo(camera.position);
-      if (d < c.passiveRange) { audio.startPassive(c); audio.pannerFor(c, c.pos); }
-      else audio.stopPassive(c);
-    } else if (started && c.kind === 'school') {
-      const d = c.pos.distanceTo(camera.position);
-      if (d < 100) { audio.startPassive(c); audio.pannerFor(c, c.pos); }
-      else audio.stopPassive(c);
+      if (d < (c.passiveRange || 100)) {
+        audio.startPassive(c);
+        audio.pannerFor(c, c.pos);
+        const to = c.pos.clone().sub(camera.position).normalize();
+        audio.setPassiveMuffle(c, 0.5 + 0.5 * to.dot(fwd));
+      } else audio.stopPassive(c);
     }
   }
 
@@ -563,7 +632,7 @@ function tick() {
   surfaceUniforms.uBrightness.value = Math.max(1 - dark, 0);
   surfaceUniforms.uTime.value = t;
   surfaceUniforms.uFogColor.value.copy(fogC).convertLinearToSRGB();
-  floorMesh.visible = depth > TWILIGHT * 0.8;   // by then the fog is near-black
+  floorMesh.visible = depth > TWILIGHT;        // only once the fog is truly black
   surfaceMesh.visible = depth < 200;            // below that it's just a black silhouette
 
   const zone = depth < SUNLIT ? 'THE SUNLIT ZONE' : depth < TWILIGHT ? 'THE TWILIGHT' : 'THE ABYSS';
@@ -608,10 +677,7 @@ function tick() {
   // ---- HUD
   player.pingCd -= dt;
   player.bestDepth = Math.max(player.bestDepth, depth);
-  $('depthNum').textContent = Math.max(0, Math.round(depth));
   const alt = camera.position.y - floorY(camera.position.x, camera.position.z);
-  $('alt').textContent = alt < 200 ? `alt ${Math.round(alt)} m` : '';
-  $('o2').style.height = `${player.o2 * 100}%`;
   if (msgT > 0 && (msgT -= dt) <= 0) msgEl.style.opacity = 0;
   if (zoneT > 0 && (zoneT -= dt) <= 0) zoneEl.style.opacity = 0;
   if (!firstPing && started && player.pingCd > 0) {
@@ -620,6 +686,10 @@ function tick() {
   }
 
   drawNav(dark);
+  drawLungs(t);
+  if (gizmos) drawGizmos();
+  fpsEma = fpsEma * 0.95 + 0.05 / Math.max(dt, 1e-4);
+  if (debugOpen) updateDebug(dt, depth, alt);
   renderer.render(scene, camera);
 }
 

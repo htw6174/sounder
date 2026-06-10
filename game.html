@@ -17,26 +17,11 @@
     color: #cfeaff; font-family: 'Cormorant Garamond', Georgia, serif;
   }
 
-  #depth {
-    position: fixed; right: 28px; top: 50%; transform: translateY(-50%);
-    text-align: right; font-size: 20px; letter-spacing: 0.15em;
-    color: #9fcbe8; text-shadow: 0 0 12px rgba(0,30,60,0.9);
-  }
-  #depth .big { font-size: 34px; color: #e6f6ff; }
-
-  #o2wrap {
-    position: fixed; left: 28px; top: 50%; transform: translateY(-50%);
-    width: 10px; height: 240px; border: 1px solid rgba(160,210,240,0.5);
-    border-radius: 6px; overflow: hidden;
-  }
-  #o2 {
-    position: absolute; bottom: 0; left: 0; right: 0; height: 100%;
-    background: linear-gradient(to top, #2e7fb8, #9fdcff);
-    transition: height 0.3s linear;
-  }
-  #o2label {
-    position: fixed; left: 22px; top: calc(50% + 132px);
-    font-size: 14px; letter-spacing: 0.3em; color: #9fcbe8;
+  #debug {
+    position: fixed; top: 16px; left: 16px; display: none;
+    font: 13px/1.7 monospace; color: #9fe8c0;
+    background: rgba(0, 10, 18, 0.75); border: 1px solid rgba(120,200,160,0.3);
+    border-radius: 4px; padding: 10px 14px; pointer-events: none;
   }
 
   #score {
@@ -94,13 +79,11 @@
 
 <div id="hud">
   <div id="ret"></div>
-  <div id="depth"><span class="big" id="depthNum">0</span> m<br><span id="alt"></span></div>
-  <div id="o2wrap"><div id="o2"></div></div>
-  <div id="o2label">O₂</div>
+  <div id="debug"></div>
   <div id="score">∅</div>
   <div id="zone"></div>
   <div id="msg"></div>
-  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · F bite</div>
+  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · F bite · ` debug</div>
 </div>
 
 <div id="gate">

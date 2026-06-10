@@ -58,25 +58,27 @@ export class AudioEngine {
 
     // ambient bed: surf hiss up top, sub-bass pressure down deep.
     // both are depth gauges you don't have to ping for.
-    const mkLoop = (filterType, freq, q) => {
+    const mkLoop = (filterType, freq, q, dest) => {
       const src = ctx.createBufferSource();
       src.buffer = buf; src.loop = true; src.playbackRate.value = 0.5;
       const f = ctx.createBiquadFilter();
       f.type = filterType; f.frequency.value = freq; f.Q.value = q;
       const g = ctx.createGain(); g.gain.value = 0;
-      src.connect(f).connect(g).connect(this.master);
+      src.connect(f).connect(g).connect(dest);
       src.start();
       return g;
     };
-    this.surfGain = mkLoop('bandpass', 650, 0.5);
+    // surf: the wave swell (LFO) and the per-frame depth fade live on
+    // SEPARATE gain stages in series, so they multiply instead of fighting
+    const swell = ctx.createGain(); swell.gain.value = 1;     // 1 ± 0.45
+    const lfoAmp = ctx.createGain(); lfoAmp.gain.value = 0.45;
     this.surfLfo = ctx.createOscillator();
     this.surfLfo.frequency.value = 0.13;
-    this.surfDepthGain = ctx.createGain(); this.surfDepthGain.gain.value = 0;
-    // LFO swells the surf like passing waves
-    const lfoAmp = ctx.createGain(); lfoAmp.gain.value = 0.035;
-    this.surfLfo.connect(lfoAmp).connect(this.surfGain.gain);
+    this.surfLfo.connect(lfoAmp).connect(swell.gain);
     this.surfLfo.start();
-    this.rumbleGain = mkLoop('lowpass', 65, 0.7);
+    swell.connect(this.master);
+    this.surfGain = mkLoop('bandpass', 650, 0.5, swell);
+    this.rumbleGain = mkLoop('lowpass', 65, 0.7, this.master);
 
     this.ready = true;
   }
@@ -115,7 +117,7 @@ export class AudioEngine {
       pan.panningModel = 'HRTF';
       pan.distanceModel = 'exponential';
       pan.refDistance = 6;
-      pan.rolloffFactor = 0.35;             // hear the whole water column, not just arm's reach
+      pan.rolloffFactor = 0.85;             // hear the whole water column, not just arm's reach
       pan.connect(this.master);
       pan.connect(this.wash);
       this.panners.set(key, pan);
@@ -169,14 +171,25 @@ export class AudioEngine {
       dop = Math.min(Math.max(1 - (vr / SOUND_SPEED) * 2.5, 0.75), 1.3);
     }
 
+    // facing → muffle: HRTF alone is weak front/back, so encode it hard.
+    // a return from dead astern is much duller and a touch quieter.
+    let front01 = 1;
+    if (observer.fwd) {
+      const dot = (observer.fwd.x * dx + observer.fwd.y * dy + observer.fwd.z * dz) / dist;
+      front01 = 0.5 + 0.5 * dot;
+    }
+    // behind you, every voice drops by more than half an octave — a timbre
+    // cue that survives whatever band the contact speaks in
+    const dirMul = 0.55 + 0.45 * front01;
+
     // mild extra spreading loss on top of the panner's — slow by design:
     // range is told by DELAY, not by silence
     const loss = 1 / (1 + dist * 0.004);
-    const gain = T.gain * loss * Math.min(Math.pow(size, 0.8), 3);
+    const gain = T.gain * loss * Math.min(Math.pow(size, 0.8), 3) * (0.75 + 0.25 * front01);
 
     const pan = this.pannerFor(contact, contact.pos);
     const lp = this.ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = absorb;
+    lp.type = 'lowpass'; lp.frequency.value = absorb * (0.35 + 0.65 * front01);
     lp.connect(pan);
     setTimeout(() => lp.disconnect(), (delay + 2) * 1000);
 
@@ -193,7 +206,7 @@ export class AudioEngine {
         src.playbackRate.value = (1.5 + Math.random()) * dop;
         const bp = this.ctx.createBiquadFilter();
         bp.type = 'bandpass';
-        bp.frequency.value = T.base * brightness * reg * (0.6 + Math.random() * 0.9);
+        bp.frequency.value = T.base * brightness * reg * dirMul * (0.6 + Math.random() * 0.9);
         bp.Q.value = 6;
         const g = this.ctx.createGain();
         const gv = (gain / Math.sqrt(n)) * (0.4 + Math.random() * 0.6) * 1.4;
@@ -217,7 +230,7 @@ export class AudioEngine {
       const src = this.ctx.createBufferSource();
       src.buffer = this.noise; src.playbackRate.value = 0.4 * dop;
       const lp2 = this.ctx.createBiquadFilter();
-      lp2.type = 'lowpass'; lp2.frequency.value = 320 * brightness;
+      lp2.type = 'lowpass'; lp2.frequency.value = 320 * brightness * dirMul;
       const g2 = this.ctx.createGain();
       g2.gain.setValueAtTime(gain * 0.35, t);
       g2.gain.exponentialRampToValueAtTime(0.001, t + T.decay * 0.8);
@@ -230,7 +243,7 @@ export class AudioEngine {
       src.playbackRate.value = dop;
       const bp = this.ctx.createBiquadFilter();
       bp.type = 'bandpass'; bp.Q.value = T.q;
-      const f0 = T.base * reg * brightness;
+      const f0 = T.base * reg * brightness * dirMul;
       bp.frequency.setValueAtTime(f0, t);
       if (T.sweep) bp.frequency.exponentialRampToValueAtTime(f0 * (1 + T.sweep), t + T.decay);
       const g = this.ctx.createGain();
@@ -258,6 +271,11 @@ export class AudioEngine {
     const T = TIMBRES[contact.kind] ?? TIMBRES.rock;
     const brightness = Math.pow(2, (dy / dist) * 0.9);
     const reg = 1 / Math.pow(contact.size ?? 1, 0.55);
+    let front01 = 1;
+    if (observer.fwd) {
+      const dot = (observer.fwd.x * dx + observer.fwd.y * dy + observer.fwd.z * dz) / dist;
+      front01 = 0.5 + 0.5 * dot;
+    }
     const pan = this.pannerFor(contact, contact.pos);
 
     const grains = T.grains ? 3 : 1;
@@ -268,9 +286,9 @@ export class AudioEngine {
       src.playbackRate.value = 1.2 + Math.random() * 0.6;
       const bp = this.ctx.createBiquadFilter();
       bp.type = 'bandpass'; bp.Q.value = Math.max(T.q, 2);
-      bp.frequency.value = T.base * brightness * reg * (0.8 + Math.random() * 0.4);
+      bp.frequency.value = T.base * brightness * reg * (0.8 + Math.random() * 0.4) * (0.5 + 0.5 * front01);
       const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0.32 / grains, gt);
+      g.gain.setValueAtTime((0.32 / grains) * (0.8 + 0.2 * front01), gt);
       g.gain.exponentialRampToValueAtTime(0.001, gt + 0.045);
       src.connect(bp).connect(g).connect(pan);
       src.start(gt, Math.random(), 0.05);
@@ -303,9 +321,11 @@ export class AudioEngine {
     const pan = this.pannerFor(contact, contact.pos);
     const master = this.ctx.createGain();
     master.gain.value = 0;
-    master.connect(pan);
+    const muffle = this.ctx.createBiquadFilter();
+    muffle.type = 'lowpass'; muffle.frequency.value = 12000;
+    master.connect(muffle).connect(pan);
     let alive = true;
-    const entry = { gain: master, stop: () => { alive = false; master.disconnect(); } };
+    const entry = { gain: master, muffle, stop: () => { alive = false; master.disconnect(); muffle.disconnect(); } };
 
     if (contact.kind === 'school') {
       // faint static crackle, like rain on the hull
@@ -369,6 +389,12 @@ export class AudioEngine {
     entry.stop = () => { clearTimeout(entry.timer); stop0(); };
     this.passive.set(contact, entry);
     master.gain.linearRampToValueAtTime(1, this.now() + 1.5);
+  }
+
+  // facing-dependent dullness for a contact's passive sound (front01: 0 rear, 1 front)
+  setPassiveMuffle(contact, front01) {
+    const e = this.passive.get(contact);
+    if (e?.muffle) e.muffle.frequency.value = 700 + front01 * 8000;
   }
 
   stopPassive(contact) {
