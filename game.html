@@ -65,6 +65,70 @@
   #gate .go { font-family: 'Cormorant Garamond', Georgia, serif; letter-spacing: 0.45em; text-indent: 0.45em; text-transform: uppercase; font-size: 16px; animation: breathe 3s ease-in-out infinite; }
   @keyframes breathe { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
 
+  /* kin call wheel (hold E) */
+  #wheel {
+    position: fixed; inset: 0; display: none; pointer-events: none;
+    font-family: 'Cormorant Garamond', Georgia, serif;
+  }
+  #wheel.on { display: block; }
+  #wheel::before {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: 340px; height: 340px; transform: translate(-50%,-50%);
+    border: 1px solid rgba(150,215,250,0.25); border-radius: 50%;
+    background: radial-gradient(circle, rgba(8,30,50,0.0) 30%, rgba(8,30,50,0.45) 70%, rgba(8,30,50,0) 72%);
+  }
+  .wopt {
+    position: absolute; left: 50%; top: 50%; width: 150px;
+    margin-left: -75px; text-align: center; color: #a8d4ec;
+    letter-spacing: 0.28em; text-indent: 0.28em; font-size: 15px;
+    text-transform: uppercase; opacity: 0.65; transition: all 0.12s ease;
+  }
+  .wopt small { display: block; text-transform: none; letter-spacing: 0.06em; text-indent: 0;
+    font-style: italic; font-size: 13px; color: rgba(168,212,236,0.6); }
+  .wopt.sel { color: #eef9ff; opacity: 1; text-shadow: 0 0 14px rgba(140,210,255,0.8); transform: scale(1.12); }
+  #w-locate { transform: translateY(-150px); } #w-locate.sel { transform: translateY(-150px) scale(1.12); }
+  #w-gather { transform: translate(170px, -10px); } #w-gather.sel { transform: translate(170px, -10px) scale(1.12); }
+  #w-hunt   { transform: translateY(125px); } #w-hunt.sel { transform: translateY(125px) scale(1.12); }
+  #w-name   { transform: translate(-170px, -10px); } #w-name.sel { transform: translate(-170px, -10px) scale(1.12); }
+
+  /* the giant's grip — toothed suckers, shown as pain */
+  .grip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity 0.25s ease;
+    z-index: 5;
+  }
+  .grip.on { opacity: 1; animation: gripPulse 0.9s ease-in-out infinite; }
+  @keyframes gripPulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.45); } }
+  #gripL { left: 0; top: 0; bottom: 0; width: 24vw;
+    background:
+      radial-gradient(circle at 4vw 22vh, transparent 0 2.0vw, rgba(255,46,30,0.55) 2.1vw 2.9vw, transparent 3.4vw),
+      radial-gradient(circle at 7vw 43vh, transparent 0 2.6vw, rgba(255,46,30,0.5) 2.7vw 3.6vw, transparent 4.2vw),
+      radial-gradient(circle at 3vw 64vh, transparent 0 2.2vw, rgba(255,46,30,0.55) 2.3vw 3.1vw, transparent 3.6vw),
+      radial-gradient(circle at 8vw 82vh, transparent 0 1.7vw, rgba(255,46,30,0.5) 1.8vw 2.5vw, transparent 3.0vw),
+      linear-gradient(to right, rgba(150,8,2,0.6), rgba(150,8,2,0.25) 55%, transparent);
+  }
+  #gripR { right: 0; top: 0; bottom: 0; width: 24vw;
+    background:
+      radial-gradient(circle at 20vw 25vh, transparent 0 2.1vw, rgba(255,46,30,0.55) 2.2vw 3.0vw, transparent 3.5vw),
+      radial-gradient(circle at 17vw 47vh, transparent 0 2.5vw, rgba(255,46,30,0.5) 2.6vw 3.5vw, transparent 4.1vw),
+      radial-gradient(circle at 21vw 68vh, transparent 0 2.0vw, rgba(255,46,30,0.55) 2.1vw 2.9vw, transparent 3.4vw),
+      radial-gradient(circle at 16vw 85vh, transparent 0 1.6vw, rgba(255,46,30,0.5) 1.7vw 2.4vw, transparent 2.9vw),
+      linear-gradient(to left, rgba(150,8,2,0.6), rgba(150,8,2,0.25) 55%, transparent);
+  }
+  #gripT { left: 0; right: 0; top: 0; height: 26vh;
+    background:
+      radial-gradient(circle at 24vw 5vh, transparent 0 2.1vw, rgba(255,46,30,0.55) 2.2vw 3.0vw, transparent 3.5vw),
+      radial-gradient(circle at 49vw 9vh, transparent 0 2.6vw, rgba(255,46,30,0.5) 2.7vw 3.6vw, transparent 4.2vw),
+      radial-gradient(circle at 73vw 4vh, transparent 0 2.0vw, rgba(255,46,30,0.55) 2.1vw 2.9vw, transparent 3.4vw),
+      linear-gradient(to bottom, rgba(150,8,2,0.6), rgba(150,8,2,0.25) 55%, transparent);
+  }
+  #gripB { left: 0; right: 0; bottom: 0; height: 26vh;
+    background:
+      radial-gradient(circle at 27vw 21vh, transparent 0 2.1vw, rgba(255,46,30,0.55) 2.2vw 3.0vw, transparent 3.5vw),
+      radial-gradient(circle at 52vw 17vh, transparent 0 2.6vw, rgba(255,46,30,0.5) 2.7vw 3.6vw, transparent 4.2vw),
+      radial-gradient(circle at 76vw 22vh, transparent 0 2.0vw, rgba(255,46,30,0.55) 2.1vw 2.9vw, transparent 3.4vw),
+      linear-gradient(to top, rgba(150,8,2,0.6), rgba(150,8,2,0.25) 55%, transparent);
+  }
+
   /* reticle */
   #ret {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
@@ -83,8 +147,19 @@
   <div id="score">∅</div>
   <div id="zone"></div>
   <div id="msg"></div>
-  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · F bite · ` debug</div>
+  <div id="controls">mouse steer · W swim · space rise · shift sink · click to sound · hold right-click to creak · hold E to call · F bite · ` debug</div>
 </div>
+
+<div id="wheel">
+  <div class="wopt" id="w-locate">Locate<small>where are you?</small></div>
+  <div class="wopt" id="w-gather">Gather<small>come to me</small></div>
+  <div class="wopt" id="w-hunt">Hunt<small>drive my prey</small></div>
+  <div class="wopt" id="w-name">Name<small>it's me</small></div>
+</div>
+<div class="grip" id="gripL"></div>
+<div class="grip" id="gripR"></div>
+<div class="grip" id="gripT"></div>
+<div class="grip" id="gripB"></div>
 
 <div id="gate">
   <h2>THE HUNT</h2>

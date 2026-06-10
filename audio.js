@@ -421,6 +421,62 @@ export class AudioEngine {
     src.start(t, Math.random(), 0.55);
   }
 
+  // ------------------------------------------------------------ codas
+  // gaps: seconds between clicks. contact null = your own voice (in-skull);
+  // otherwise the answer arrives spatialized from the speaker.
+  coda(gaps, contact = null) {
+    if (!this.ready) return;
+    let t = this.now() + 0.02;
+    const dest = contact ? this.pannerFor(contact, contact.pos) : this.master;
+    for (const gap of gaps) {
+      t += gap;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise; src.playbackRate.value = contact ? 1.9 : 1.4;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.frequency.value = contact ? 2300 : 1600; bp.Q.value = 1.4;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(contact ? 0.5 : 0.26, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+      src.connect(bp).connect(g).connect(dest);
+      src.start(t, Math.random(), 0.05);
+      // low body under each click
+      const th = this.ctx.createOscillator();
+      th.type = 'sine'; th.frequency.value = contact ? 220 : 150;
+      const tg = this.ctx.createGain();
+      tg.gain.setValueAtTime(contact ? 0.16 : 0.12, t);
+      tg.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+      th.connect(tg).connect(dest);
+      th.start(t); th.stop(t + 0.07);
+    }
+  }
+
+  // the giant takes hold — wet, low, final
+  seize() {
+    if (!this.ready) return;
+    const t = this.now();
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 0.45;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(1800, t);
+    lp.frequency.exponentialRampToValueAtTime(220, t + 0.6);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.85, t + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 1.0);
+    const th = this.ctx.createOscillator();
+    th.type = 'sine';
+    th.frequency.setValueAtTime(70, t);
+    th.frequency.exponentialRampToValueAtTime(34, t + 0.7);
+    const tg = this.ctx.createGain();
+    tg.gain.setValueAtTime(0.5, t);
+    tg.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
+    th.connect(tg).connect(this.master);
+    th.start(t); th.stop(t + 0.9);
+  }
+
   // ------------------------------------------------------------ body sounds
   bite(hit) {
     if (!this.ready) return;

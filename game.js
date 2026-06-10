@@ -25,6 +25,11 @@ camera.position.set(0, -6, 0);
 
 const audio = new AudioEngine();
 
+// scratch vectors for per-frame math
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3(), _v5 = new THREE.Vector3(), _v6 = new THREE.Vector3();
+const _q1 = new THREE.Quaternion();
+
 // ------------------------------------------------------------- water visuals
 const waterUniforms = { uBrightness: { value: 1 } };
 {
@@ -102,8 +107,6 @@ const surfaceUniforms = {
 }
 
 // seafloor (you will almost never see it; you will hear it).
-// hidden until the fog has gone black, so its fogged-to-blue distant
-// expanse never washes out the open-water gradient from above.
 let floorMesh;
 {
   const geo = new THREE.PlaneGeometry(1600, 1600, 80, 80);
@@ -118,8 +121,7 @@ let floorMesh;
 }
 
 // marine snow — fixed in the WORLD (it's the only thing that tells you
-// how fast you're moving in the dark). Particles live in a wrap-around
-// cube centered on the player and fade with depth.
+// how fast you're moving in the dark), recycled around the player.
 let snow, snowSink, snowMat;
 const SNOW_R = 55;
 {
@@ -148,42 +150,202 @@ function dotTexture() {
   return new THREE.CanvasTexture(cv);
 }
 
+// --------------------------------------------------------- creature material
+// Standard fog is one color in every direction, so a deep creature seen
+// from above fogs toward BRIGHT blue against the dark down-gradient and
+// pops out. This material fogs toward the actual water gradient along
+// the view ray — creatures dissolve into whatever is behind them.
+// It also carries the procedural swim deformation.
+const envU = {
+  uTime: { value: 0 },
+  uDark: { value: 0 },
+  uFogDensity: { value: 0.026 },
+};
+
+function waterMat(hex, opts = {}) {
+  return new THREE.ShaderMaterial({
+    side: opts.side ?? THREE.FrontSide,
+    uniforms: {
+      uColor: { value: new THREE.Vector3(((hex >> 16) & 255) / 255, ((hex >> 8) & 255) / 255, (hex & 255) / 255) },
+      uTime: envU.uTime, uDark: envU.uDark, uFogDensity: envU.uFogDensity,
+      uWaterBright: waterUniforms.uBrightness,
+      uSwimAmp: { value: opts.swimAmp ?? 0 },
+      uSwimFreq: { value: opts.swimFreq ?? 2 },
+      uSwimPhase: { value: opts.swimPhase ?? Math.random() * 6.28 },
+      uAxisY: { value: opts.vertical ? 1 : 0 },
+      uBendOrigin: { value: opts.bendOrigin ?? 0 },
+      uBendSpan: { value: opts.bendSpan ?? 10 },
+    },
+    vertexShader: `
+      uniform float uTime, uSwimAmp, uSwimFreq, uSwimPhase, uAxisY, uBendOrigin, uBendSpan;
+      varying vec3 vWorld;
+      void main() {
+        vec3 pos = position;
+        float w = clamp((uBendOrigin - pos.x) / uBendSpan, 0.0, 1.0);
+        float off = uSwimAmp * w * w * sin(uTime * uSwimFreq + uSwimPhase - pos.x * 0.3);
+        pos.y += off * uAxisY;
+        pos.z += off * (1.0 - uAxisY);
+        vec4 wp = modelMatrix * vec4(pos, 1.0);
+        vWorld = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uDark, uFogDensity, uWaterBright;
+      varying vec3 vWorld;
+      void main() {
+        vec3 rel = vWorld - cameraPosition;
+        float dist = length(rel);
+        vec3 dir = rel / dist;
+        float up = dir.y * 0.5 + 0.5;
+        vec3 down = vec3(0.005,0.045,0.09), mid = vec3(0.039,0.30,0.47), top = vec3(0.13,0.46,0.65);
+        vec3 water = mix(down, mid, smoothstep(0.05,0.5,up));
+        water = mix(water, top, smoothstep(0.5,0.95,up));
+        water *= uWaterBright;
+        float fogF = 1.0 - exp(-uFogDensity * dist);
+        vec3 col = mix(uColor * max(1.0 - uDark, 0.05), water, fogF);
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+}
+
 // ------------------------------------------------------------------ fauna
 const contacts = [];   // anything that returns an echo
 
 function makeWhaleMesh() {
+  const phase = Math.random() * 6.28;
+  const freq = 1.5 + Math.random() * 0.4;
+  // body bends most at the tail; flukes flap whole with matching phase
+  const matBody = waterMat(0x2b4257, { swimAmp: 0.5, swimFreq: freq, swimPhase: phase, vertical: true, bendOrigin: 9, bendSpan: 14 });
+  const matFluke = waterMat(0x2b4257, { swimAmp: 0.55, swimFreq: freq, swimPhase: phase, vertical: true, bendOrigin: 999, bendSpan: 14 });
   const profile = [
     [0.02,0],[0.18,0.5],[0.38,1.4],[0.70,2.8],[1.05,4.4],[1.30,6.0],[1.42,7.6],
     [1.45,9.0],[1.42,10.4],[1.30,11.4],[0.95,12.1],[0.30,12.45],[0.0,12.5],
   ].map(([r,y]) => new THREE.Vector2(r,y));
-  const mat = new THREE.MeshBasicMaterial({ color: 0x2b4257 });
   const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.LatheGeometry(profile, 20), mat);
-  body.rotation.z = -Math.PI/2; g.add(body);
-  const blob = new THREE.SphereGeometry(1, 10, 7);
+  const bodyGeo = new THREE.LatheGeometry(profile, 20);
+  bodyGeo.rotateZ(-Math.PI / 2);          // bake: nose +x, so the shader bend sees the body axis
+  g.add(new THREE.Mesh(bodyGeo, matBody));
+  const flGeo = new THREE.SphereGeometry(1, 10, 7);
+  flGeo.scale(1.7, 0.14, 0.75);           // bake scale so the flap isn't squashed
   for (const s of [-1,1]) {
-    const fl = new THREE.Mesh(blob, mat);
-    fl.scale.set(1.7,0.14,0.75); fl.position.set(-0.4,0,s*1.15); fl.rotation.y = s*-0.55; g.add(fl);
+    const fl = new THREE.Mesh(flGeo, matFluke);
+    fl.position.set(-0.4, 0, s*1.15); fl.rotation.y = s*-0.55; g.add(fl);
   }
   return g;
 }
 
-function makeSquidMesh(size) {
-  const mat = new THREE.MeshBasicMaterial({ color: 0x2e2531 });
+// squid: mantle leads (+z), arms trail. arms are simulated ribbons.
+function makeSquidMesh(size, giant = false) {
+  const color = giant ? 0x31222b : 0x2e2531;
+  const mat = waterMat(color);
   const g = new THREE.Group();
-  const mantle = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.4, 10), mat);
-  mantle.rotation.x = Math.PI/2; mantle.position.z = -0.6; g.add(mantle);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 8), mat);
-  head.position.z = 0.7; g.add(head);
-  for (let i = 0; i < 6; i++) {
-    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.02, 1.6, 5), mat);
-    arm.rotation.x = Math.PI/2 + (Math.random()-0.5)*0.5;
-    arm.rotation.z = (i/6) * Math.PI*2;
-    arm.position.set(Math.sin(i)*0.18, Math.cos(i)*0.18, 1.6);
-    g.add(arm);
+  const prof = [
+    [0.34,0],[0.46,0.5],[0.52,1.0],[0.44,1.6],[0.30,2.05],[0.14,2.4],[0.01,2.65],
+  ].map(([r,y]) => new THREE.Vector2(r,y));
+  const mantleGeo = new THREE.LatheGeometry(prof, 12);
+  mantleGeo.rotateX(Math.PI / 2);          // axis +z, tip forward
+  g.add(new THREE.Mesh(mantleGeo, mat));
+  const finGeo = new THREE.SphereGeometry(1, 8, 6);
+  finGeo.scale(0.55, 0.07, 0.42);
+  for (const s of [-1, 1]) {
+    const fin = new THREE.Mesh(finGeo, mat);
+    fin.position.set(s * 0.30, 0, 2.05);
+    fin.rotation.z = s * 0.25;
+    g.add(fin);
+  }
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.30, 10, 8), mat);
+  head.position.z = -0.28; g.add(head);
+  const eyeMat = waterMat(0x9fb8c8);
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.10, 8, 6), eyeMat);
+    eye.position.set(s * 0.25, 0.06, -0.30);
+    g.add(eye);
   }
   g.scale.setScalar(size);
   return g;
+}
+
+// arm chains: 8 arms + 2 long tentacles per squid, simulated as lagged
+// kinematic chains in world space. they drift and swish in the current,
+// and stream straight behind when the animal jets.
+function buildArms(c) {
+  const giant = c.kind === 'giant';
+  const arms = [];
+  const back = _v1.set(0, 0, -1).applyQuaternion(c.mesh.quaternion);
+  for (let i = 0; i < 10; i++) {
+    const tentacle = i >= 8;
+    const segs = tentacle ? 8 : 6;
+    const len = (tentacle ? 2.9 : 1.7) * c.size;
+    const ang = tentacle ? (i === 8 ? 0.4 : Math.PI - 0.4) : (i / 8) * Math.PI * 2 + 0.39;
+    const arm = {
+      ang, segs, segLen: len / segs,
+      width: (tentacle ? 0.05 : 0.09) * c.size,
+      phase: Math.random() * 6.28,
+      pts: [], dirs: [],
+    };
+    const base = _v2.set(Math.cos(ang) * 0.18, Math.sin(ang) * 0.18, -0.45)
+      .multiplyScalar(c.size).applyQuaternion(c.mesh.quaternion).add(c.pos);
+    for (let s = 0; s <= segs; s++) arm.pts.push(base.clone().addScaledVector(back, s * arm.segLen));
+    for (let s = 0; s < segs; s++) arm.dirs.push(back.clone());
+    arms.push(arm);
+  }
+  const vertCount = arms.reduce((n, a) => n + (a.segs + 1) * 2, 0);
+  const posArr = new Float32Array(vertCount * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3).setUsage(THREE.DynamicDrawUsage));
+  const idx = [];
+  let vbase = 0;
+  for (const a of arms) {
+    for (let s = 0; s < a.segs; s++) {
+      const r = vbase + s * 2;
+      idx.push(r, r + 1, r + 2, r + 1, r + 3, r + 2);
+    }
+    vbase += (a.segs + 1) * 2;
+  }
+  geo.setIndex(idx);
+  const mesh = new THREE.Mesh(geo, waterMat(giant ? 0x31222b : 0x2e2531, { side: THREE.DoubleSide }));
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  c.arms = arms; c.armGeo = geo; c.armPos = posArr; c.armMesh = mesh;
+}
+
+function updateArms(c, dt) {
+  const t = envU.uTime.value;
+  const q = c.mesh.quaternion;
+  const speed = c.vel.length();
+  const speedK = THREE.MathUtils.clamp(speed / 9, 0, 1);
+  if (speed > 0.3) _v1.copy(c.vel).multiplyScalar(-1 / speed);
+  else _v1.set(0, 0, -1).applyQuaternion(q);
+  const ts = c.kind === 'giant' ? 0.5 : 1.5;        // the giant's arms ripple slowly
+  const pos = c.armPos;
+  let vi = 0;
+  for (const a of c.arms) {
+    _v2.set(Math.cos(a.ang) * 0.18, Math.sin(a.ang) * 0.18, -0.45)
+      .multiplyScalar(c.size).applyQuaternion(q).add(c.pos);
+    a.pts[0].copy(_v2);
+    const flare = 0.30 + 0.20 * Math.sin(t * ts + a.phase);
+    _v3.set(Math.cos(a.ang) * flare, Math.sin(a.ang) * flare, -1).normalize().applyQuaternion(q);
+    for (let i = 0; i < a.segs; i++) {
+      const drift = 0.10 * Math.sin(t * ts * 1.7 + a.phase + i * 0.9);
+      _v4.copy(_v3).lerp(_v1, speedK);
+      _v4.x += drift * 0.6; _v4.y += drift;
+      _v4.normalize();
+      const stiff = 4.5 * (1 - i / (a.segs + 2)) + 0.5;    // tips lag, bases obey
+      a.dirs[i].lerp(_v4, Math.min(stiff * dt, 1)).normalize();
+      a.pts[i + 1].copy(a.pts[i]).addScaledVector(a.dirs[i], a.segLen);
+    }
+    for (let i = 0; i <= a.segs; i++) {
+      const p = a.pts[i];
+      _v5.subVectors(a.pts[Math.min(i + 1, a.segs)], a.pts[Math.max(i - 1, 0)]).normalize();
+      _v6.subVectors(p, camera.position).normalize();
+      _v6.crossVectors(_v5, _v6).normalize();              // camera-facing ribbon
+      const w = a.width * (1 - (i / a.segs) * 0.85);
+      pos[vi++] = p.x + _v6.x * w; pos[vi++] = p.y + _v6.y * w; pos[vi++] = p.z + _v6.z * w;
+      pos[vi++] = p.x - _v6.x * w; pos[vi++] = p.y - _v6.y * w; pos[vi++] = p.z - _v6.z * w;
+    }
+  }
+  c.armGeo.attributes.position.needsUpdate = true;
 }
 
 function addSchool(x, y, z) {
@@ -207,33 +369,42 @@ function addSchool(x, y, z) {
   contacts.push({
     kind: 'school', mesh, pos: mesh.position, vel: new THREE.Vector3(),
     size, density, spread, seed: Math.random()*100, passiveRange: 100,
+    fishBase: pts.slice(),
   });
 }
 
 function addSquid(depth, opts = {}) {
   const size = opts.size ?? (0.8 + Math.random()*1.6);
-  const mesh = makeSquidMesh(size);
+  const giantFlag = !!opts.giant;
+  const mesh = makeSquidMesh(size, giantFlag);
   const a = Math.random()*Math.PI*2, r = 40 + Math.random()*240;
   mesh.position.set(Math.cos(a)*r, -depth, Math.sin(a)*r);
   scene.add(mesh);
   const c = {
-    kind: opts.giant ? 'giant' : 'squid', mesh, pos: mesh.position,
+    kind: giantFlag ? 'giant' : 'squid', mesh, pos: mesh.position,
     vel: new THREE.Vector3(), size, jetT: 0, bites: 0,
     homeDepth: -depth, seed: Math.random()*100,
-    passiveRange: opts.giant ? 600 : 0,
+    passiveRange: giantFlag ? 600 : 0,
+    aggro: 0, state: 'lurk', gripSide: null, faceProgress: 0, windowT: 0, modeT: 0,
   };
+  buildArms(c);
   contacts.push(c);
   return c;
 }
 
-function addWhale(x, y, z) {
+function addWhale(x, y, z, opts = {}) {
   const mesh = makeWhaleMesh();
+  if (opts.scale) mesh.scale.setScalar(opts.scale);
   mesh.position.set(x, y, z);
   scene.add(mesh);
-  contacts.push({
+  const c = {
     kind: 'whale', mesh, pos: mesh.position, vel: new THREE.Vector3(),
-    size: 11, seed: Math.random()*100, passiveRange: 350, heading: Math.random()*Math.PI*2,
-  });
+    size: opts.scale ? 11 * opts.scale : 11,
+    seed: Math.random()*100, passiveRange: 350, heading: Math.random()*Math.PI*2,
+    mode: 'wander', modeT: 0, huntTarget: null, follow: opts.follow ?? null, jetCd: 0,
+  };
+  contacts.push(c);
+  return c;
 }
 
 for (let i = 0; i < 7; i++) addSchool((Math.random()-0.5)*420, -15 - Math.random()*105, (Math.random()-0.5)*420);
@@ -241,19 +412,22 @@ for (let i = 0; i < 10; i++) addSquid(160 + Math.random()*360);
 for (let i = 0; i < 4; i++) addSquid(520 + Math.random()*280);
 const giant = addSquid(770, { giant: true, size: 9 });
 giant.pos.set(120, -770, -80);
-addWhale(-60, -30, -90);
+const kinA = addWhale(-60, -30, -90);
 addWhale(-40, -45, -120);
+addWhale(-70, -28, -85, { scale: 0.5, follow: kinA });   // the calf
 
 // ------------------------------------------------------------------ player
 const player = {
   vel: new THREE.Vector3(),
   o2: 1, score: 0, bestDepth: 0,
-  lungeT: 0, pingCd: 0, creaking: false,
+  lungeT: 0, pingCd: 0, creaking: false, callCd: 0,
   dead: false,
 };
 const euler = new THREE.Euler(0, 0, 0, 'YXZ');
 const keys = {};
 let debugOpen = false, gizmos = false, fpsEma = 60;
+let prevYaw = 0, prevPitch = 0;
+let lastCreakTarget = null;
 
 const gate = document.getElementById('gate');
 let started = false;
@@ -270,16 +444,91 @@ gate.addEventListener('click', start);
 canvas.addEventListener('click', start);
 addEventListener('contextmenu', (e) => e.preventDefault());
 
+// -------------------------------------------------------------- call wheel
+// Sperm whales speak in codas — rhythmic click patterns shared by a clan.
+// Your calls are the one emission you hear; identity is meant to be heard.
+const wheelEl = document.getElementById('wheel');
+const CODAS = {
+  locate: [0, 0.35, 0.12, 0.12],          // 1+3: where are you?
+  gather: [0, 0.18, 0.18, 0.18, 0.18],    // five regular: come
+  hunt:   [0, 0.12, 0.12, 0.42],          // 3+1: drive my prey
+  name:   [0, 0.30, 0.30, 0.11, 0.11],    // 1+1+3: it's me
+};
+const WHEEL_OPTS = ['locate', 'gather', 'hunt', 'name'];
+let wheelOpen = false;
+const selVec = { x: 0, y: 0 };
+
+function pickWheel() {
+  if (Math.hypot(selVec.x, selVec.y) < 35) return null;
+  const a = Math.atan2(selVec.y, selVec.x);           // screen y is down
+  if (a > -2.36 && a <= -0.79) return 'locate';       // up
+  if (a > -0.79 && a <= 0.79) return 'gather';        // right
+  if (a > 0.79 && a <= 2.36) return 'hunt';           // down
+  return 'name';                                      // left
+}
+
+function updateWheelSel() {
+  const sel = pickWheel();
+  for (const o of WHEEL_OPTS) document.getElementById('w-' + o).classList.toggle('sel', o === sel);
+}
+
+function emitCall(name) {
+  audio.coda(CODAS[name]);
+  player.callCd = 3;
+  const kin = contacts.filter(c => c.kind === 'whale');
+  kin.forEach((k, i) => {
+    const d = k.pos.distanceTo(camera.position);
+    const isCalf = !!k.follow;
+    let answers = true, extraWait = 0;
+    if (name === 'name') {
+      answers = isCalf || Math.random() < 0.4;        // the calf ALWAYS answers
+      extraWait = isCalf ? 0 : 1.6;
+    }
+    if (answers) {
+      setTimeout(() => {
+        audio.pannerFor(k, k.pos);
+        audio.coda(CODAS[name], k);
+      }, (0.8 + i * 0.9 + extraWait + (2 * d) / SOUND_SPEED) * 1000);
+    }
+    if (isCalf) return;                               // she only answers; she stays with mother
+    if (name === 'gather') { k.mode = 'gather'; k.modeT = 60; }
+    if (name === 'hunt') {
+      const tgt = lastCreakTarget && lastCreakTarget.kind !== 'whale' && contacts.includes(lastCreakTarget)
+        ? lastCreakTarget
+        : contacts.filter(c => (c.kind === 'squid' || c.kind === 'school') && c.pos.distanceTo(camera.position) < 140)
+            .sort((a,b) => a.pos.distanceTo(camera.position) - b.pos.distanceTo(camera.position))[0];
+      if (tgt) { k.mode = 'hunt'; k.modeT = 45; k.huntTarget = tgt; }
+    }
+  });
+  const flavor = {
+    locate: 'you ask the dark: where are you?',
+    gather: 'come, you call. the pod turns.',
+    hunt: 'drive them to me.',
+    name: 'you say your name into the deep.',
+  };
+  say(flavor[name], 3.5);
+}
+
+// ------------------------------------------------------------------ input
 addEventListener('mousemove', (e) => {
+  if (wheelOpen) {
+    selVec.x += e.movementX; selVec.y += e.movementY;
+    updateWheelSel();
+    return;                                           // concentrating: the body holds still
+  }
   if (document.pointerLockElement !== canvas) return;
   euler.y -= e.movementX * 0.0021;
   euler.x = THREE.MathUtils.clamp(euler.x - e.movementY * 0.0021, -1.45, 1.45);
-  camera.quaternion.setFromEuler(euler);
 });
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') e.preventDefault();      // space = rise
   if (e.code === 'KeyF') bite();
+  if (e.code === 'KeyE' && !e.repeat && started && !player.dead && player.callCd <= 0 && !wheelOpen) {
+    wheelOpen = true; selVec.x = 0; selVec.y = 0;
+    updateWheelSel();
+    wheelEl.classList.add('on');
+  }
   if (e.code === 'Backquote') {
     debugOpen = !debugOpen;
     debugEl.style.display = debugOpen ? 'block' : 'none';
@@ -292,7 +541,15 @@ addEventListener('keydown', (e) => {
     if (e.code === 'Digit3') { camera.position.set(100, -740, -60); player.vel.set(0,0,0); }
   }
 });
-addEventListener('keyup', (e) => { keys[e.code] = false; });
+addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+  if (e.code === 'KeyE' && wheelOpen) {
+    wheelOpen = false;
+    wheelEl.classList.remove('on');
+    const sel = pickWheel();
+    if (sel) emitCall(sel);
+  }
+});
 addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas) return;
   if (e.button === 0) ping();
@@ -314,14 +571,13 @@ function ping() {
     if (d > 420) continue;
     const delay = audio.echo(c, obs);
     if (d < nearestD) { nearest = c; nearestD = d; }
-    // calibration: while there is light, see what you hear, when you hear it
     if (depth < SUNLIT + 40) scheduleFlash(c, delay);
   }
   audio.boundaryEcho(depth, camera.position.y - floorY(camera.position.x, camera.position.z), camera.position);
-  // squid hear a close loud click and may bolt
+  // squid hear a close loud click and may bolt; the giant only listens
   for (const c of contacts) {
-    if (c.kind !== 'squid' || c.jetT > 0) continue;
-    if (c.pos.distanceTo(camera.position) < 70 && Math.random() < 0.4) startJet(c);
+    if (c.kind === 'squid' && c.jetT <= 0 && c.pos.distanceTo(camera.position) < 70 && Math.random() < 0.4) startJet(c);
+    if (c.kind === 'giant' && c.pos.distanceTo(camera.position) < 240) c.aggro += 0.3;
   }
   if (depth < SUNLIT && nearest) {
     const names = { school: 'a school of fish', squid: 'squid', whale: 'kin', giant: 'something vast' };
@@ -347,17 +603,26 @@ function bite() {
   let hit = null;
   for (const c of contacts) {
     if (c.kind !== 'squid' && c.kind !== 'giant') continue;
+    if (c.kind === 'giant' && c.state !== 'window') continue;   // its hide shrugs you off otherwise
     const to = c.pos.clone().sub(camera.position);
     const d = to.length();
-    const reach = c.kind === 'giant' ? 14 : 7.5;
-    if (d < reach && to.normalize().dot(fwd) > 0.55) { hit = c; break; }
+    const reach = c.kind === 'giant' ? 16 : 7.5;
+    if (d < reach && to.normalize().dot(fwd) > 0.5) { hit = c; break; }
   }
   audio.bite(!!hit);
   if (!hit) return;
   if (hit.kind === 'giant') {
     hit.bites++;
-    if (hit.bites < 3) { say(`it recoils — ${3 - hit.bites} more`, 3); hit.vel.add(new THREE.Vector3((Math.random()-0.5), 0.3, (Math.random()-0.5)).multiplyScalar(8)); return; }
+    if (hit.bites < 3) {
+      hit.state = 'recoil'; hit.modeT = 7; hit.faceProgress = 0;
+      setGripOverlay(null);
+      audio.jet(hit);
+      hit.vel.set((Math.random()-0.5)*2, 0.4, (Math.random()-0.5)*2).normalize().multiplyScalar(22);
+      say(`your jaw finds it — it recoils. ${3 - hit.bites} more.`, 4);
+      return;
+    }
     player.score += 10;
+    setGripOverlay(null);
     say('the abyss is yours. the name fits.', 8);
     audio.stopPassive(hit);
   } else {
@@ -366,9 +631,102 @@ function bite() {
   }
   audio.dropPanner(hit);
   scene.remove(hit.mesh);
+  if (hit.armMesh) { scene.remove(hit.armMesh); hit.armGeo.dispose(); }
   contacts.splice(contacts.indexOf(hit), 1);
   if (hit.kind === 'squid') addSquid(200 + Math.random()*550);
   updateScore();
+}
+
+// ------------------------------------------------------------- giant fight
+// It hunts your voice. It takes hold from a bearing; the screen becomes
+// a sense of touch. Turn INTO the grip to face it — then bite.
+const GRIP_OFFSETS = {
+  L: new THREE.Vector3(-7, 0, -2), R: new THREE.Vector3(7, 0, -2),
+  T: new THREE.Vector3(0, 7, -2), B: new THREE.Vector3(0, -7, -2),
+  F: new THREE.Vector3(0, 0, -10),
+};
+const gripEls = { L: document.getElementById('gripL'), R: document.getElementById('gripR'),
+                  T: document.getElementById('gripT'), B: document.getElementById('gripB') };
+function setGripOverlay(side) {
+  for (const k of Object.keys(gripEls)) gripEls[k].classList.toggle('on', k === side);
+}
+
+function pickGripSide(c) {
+  _v1.subVectors(c.pos, camera.position).applyQuaternion(_q1.copy(camera.quaternion).invert());
+  return Math.abs(_v1.x) > Math.abs(_v1.y) ? (_v1.x > 0 ? 'R' : 'L') : (_v1.y > 0 ? 'T' : 'B');
+}
+
+const SIDE_WORDS = { L: 'LEFT', R: 'RIGHT', T: 'UP', B: 'DOWN' };
+function beginGrip(c) {
+  c.state = 'grip';
+  c.faceProgress = 0;
+  c.gripSide = pickGripSide(c);
+  setGripOverlay(c.gripSide);
+  audio.seize();
+  say(`SEIZED — turn ${SIDE_WORDS[c.gripSide]}, into it`, 4);
+}
+
+function giantBehavior(c, dt, t) {
+  const d = c.pos.distanceTo(camera.position);
+  c.aggro = Math.max(0, c.aggro - dt * 0.01);
+  if (c.state === 'lurk') {
+    c.vel.multiplyScalar(Math.pow(0.3, dt));
+    c.vel.y += (c.homeDepth - c.pos.y) * 0.5 * dt;
+    c.vel.x += Math.sin(t*0.2 + c.seed) * dt * 0.5;
+    c.vel.z += Math.cos(t*0.17 + c.seed) * dt * 0.5;
+    c.pos.addScaledVector(c.vel, dt);
+    if ((c.aggro > 1 && d < 220) || d < 16) {
+      c.state = 'stalk';
+      say('something vast turns toward your voice.', 5);
+    }
+  } else if (c.state === 'stalk') {
+    _v1.subVectors(camera.position, c.pos).normalize().multiplyScalar(7.5);
+    c.vel.lerp(_v1, dt * 1.2);
+    c.pos.addScaledVector(c.vel, dt);
+    if (d < 20) beginGrip(c);
+    else if (d > 320 || -camera.position.y < 420) {
+      c.state = 'lurk'; c.aggro = 0.3;
+      say('the presence sinks away.', 4);
+    }
+  } else if (c.state === 'grip' || c.state === 'window') {
+    const off = GRIP_OFFSETS[c.gripSide] ?? GRIP_OFFSETS.F;
+    _v1.copy(off).applyQuaternion(camera.quaternion);
+    c.pos.copy(camera.position).add(_v1);
+    c.vel.set(0, 0, 0);
+    player.o2 -= dt / 38;                            // the fight burns breath
+    player.vel.multiplyScalar(Math.pow(0.25, dt));
+    if (c.state === 'grip') {
+      const dYaw = euler.y - prevYaw, dPitch = euler.x - prevPitch;
+      let toward = 0;
+      if (c.gripSide === 'L') toward = dYaw;
+      else if (c.gripSide === 'R') toward = -dYaw;
+      else if (c.gripSide === 'T') toward = dPitch;
+      else toward = -dPitch;
+      if (toward > 0) c.faceProgress += toward;
+      else player.o2 += toward * 0.04;               // turning away: it squeezes
+      if (c.faceProgress > 0.5) {
+        c.state = 'window'; c.windowT = 1.6; c.gripSide = 'F';
+        setGripOverlay(null);
+        say('its eye is before you — BITE', 2.5);
+      }
+    } else {
+      c.windowT -= dt;
+      if (c.windowT <= 0) {
+        c.faceProgress = 0;
+        c.state = 'grip';
+        c.gripSide = pickGripSide(c) ?? 'L';
+        setGripOverlay(c.gripSide);
+        audio.seize();
+        say(`it shifts its hold — turn ${SIDE_WORDS[c.gripSide]}`, 3);
+      }
+    }
+  } else if (c.state === 'recoil') {
+    c.modeT -= dt;
+    c.vel.multiplyScalar(Math.pow(0.5, dt));
+    c.pos.addScaledVector(c.vel, dt);
+    if (c.modeT <= 0) c.state = c.bites > 0 ? 'stalk' : 'lurk';   // it is committed now
+  }
+  if (c.vel.lengthSq() > 0.1) c.mesh.lookAt(_v2.copy(c.pos).add(c.vel));
 }
 
 // ------------------------------------------------------------------ HUD
@@ -385,9 +743,6 @@ fade.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;transitio
 document.body.appendChild(fade);
 
 // ------------------------------------------------- vestibular sense (nav)
-// A faint inner-ear overlay: a world-level horizon line that drifts with
-// pitch, carrying dim cardinal ticks. Brighter in the dark, where it's
-// the only orientation you have besides sound.
 const nav = document.getElementById('nav');
 const nctx = nav.getContext('2d');
 function sizeNav() { nav.width = innerWidth; nav.height = innerHeight; }
@@ -408,13 +763,12 @@ function drawNav(dark) {
   const fovY = camera.fov * Math.PI / 180;
   const fovX = 2 * Math.atan(Math.tan(fovY / 2) * camera.aspect);
   const pitch = euler.x;
-  let hy = H / 2 + (pitch / fovY) * H;     // horizon: look up → line slides down
+  let hy = H / 2 + (pitch / fovY) * H;
   let clamped = false;
   if (hy < H * 0.08) { hy = H * 0.08; clamped = true; }
   if (hy > H * 0.92) { hy = H * 0.92; clamped = true; }
   const a = clamped ? alpha * 0.35 : alpha;
 
-  // horizon line, fading at the edges
   const grad = nctx.createLinearGradient(0, 0, W, 0);
   grad.addColorStop(0, 'rgba(150,215,250,0)');
   grad.addColorStop(0.18, `rgba(150,215,250,${a})`);
@@ -424,7 +778,6 @@ function drawNav(dark) {
   nctx.lineWidth = 1;
   nctx.beginPath(); nctx.moveTo(0, hy); nctx.lineTo(W, hy); nctx.stroke();
 
-  // cardinal ticks slide along the horizon as you turn
   const heading = -euler.y;
   nctx.font = '13px "Cormorant Garamond", Georgia, serif';
   nctx.textAlign = 'center';
@@ -441,7 +794,6 @@ function drawNav(dark) {
     }
   }
 
-  // pitch dashes on the center column every 30°
   nctx.textAlign = 'left';
   for (const pm of [-1.047, -0.524, 0.524, 1.047]) {
     const y = H / 2 + ((pitch - pm) / fovY) * H;
@@ -457,7 +809,7 @@ function drawLungs(t) {
   const H = nav.height;
   const u = 1 - player.o2;
   let scale = 1;
-  if (player.o2 < 0.10) scale = 1 + 0.10 * Math.sin(t * 8);   // pounding with the heart
+  if (player.o2 < 0.10) scale = 1 + 0.10 * Math.sin(t * 8);
   const r = Math.round(110 + 145 * u), gc = Math.round(190 - 110 * u), b = Math.round(235 - 165 * u);
   const a = 0.25 + 0.45 * u;
   nctx.save();
@@ -493,7 +845,8 @@ function drawGizmos() {
     nctx.lineWidth = 1;
     nctx.beginPath(); nctx.arc(x, y, 10, 0, Math.PI * 2); nctx.stroke();
     nctx.fillStyle = col;
-    nctx.fillText(`${c.kind} ${Math.round(c.pos.distanceTo(camera.position))}m`, x + 14, y + 4);
+    const extra = c.kind === 'giant' ? ` ${c.state} a${c.aggro.toFixed(1)}` : (c.mode && c.mode !== 'wander' ? ` ${c.mode}` : '');
+    nctx.fillText(`${c.kind} ${Math.round(c.pos.distanceTo(camera.position))}m${extra}`, x + 14, y + 4);
   }
 }
 
@@ -505,6 +858,7 @@ function updateDebug(dt, depth, alt) {
     `depth ${depth.toFixed(1)} · alt ${alt.toFixed(1)}<br>` +
     `o2 ${(player.o2 * 100).toFixed(1)}% · vel ${player.vel.length().toFixed(2)}<br>` +
     `contacts ${contacts.length} · panners ${audio.panners.size} · fps ${fpsEma.toFixed(0)}<br>` +
+    `giant: ${giant.state} aggro ${giant.aggro.toFixed(2)} bites ${giant.bites}<br>` +
     `[G] gizmos ${gizmos ? 'ON' : 'off'} · [O] refill O₂ · [1/2/3] teleport`;
 }
 
@@ -512,12 +866,21 @@ function updateDebug(dt, depth, alt) {
 const clock = new THREE.Clock();
 let firstPing = false, creakTimer = 0, wasUnder = true;
 
+function lerpAngle(a, b, k) {
+  return a + wrapPi(b - a) * k;
+}
+
 function tick() {
   requestAnimationFrame(tick);
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
   const depth = -camera.position.y;
   const under = camera.position.y < 0;
+  const gripped = giant.state === 'grip' || giant.state === 'window';
+
+  // ---- orientation (mousemove only writes euler; grip shake lives here)
+  euler.z = gripped ? (Math.random() - 0.5) * 0.05 : 0;
+  camera.quaternion.setFromEuler(euler);
 
   // ---- movement
   const fwd = camera.getWorldDirection(new THREE.Vector3());
@@ -527,12 +890,12 @@ function tick() {
   if (player.lungeT > 0) { player.lungeT -= dt; thrust += 26 * (player.lungeT / 0.35); }
   player.vel.addScaledVector(fwd, thrust * dt);
   if (under) {
-    if (keys.Space) player.vel.y += 9 * dt;                      // rise
-    if (keys.ShiftLeft || keys.ShiftRight) player.vel.y -= 9 * dt; // sink
-    player.vel.multiplyScalar(Math.pow(0.45, dt));               // water drag
+    if (keys.Space) player.vel.y += 9 * dt;
+    if (keys.ShiftLeft || keys.ShiftRight) player.vel.y -= 9 * dt;
+    player.vel.multiplyScalar(Math.pow(0.45, dt));
   } else {
-    player.vel.y -= 16 * dt;                                     // gravity: what goes up
-    player.vel.multiplyScalar(Math.pow(0.92, dt));               // thin air
+    player.vel.y -= 16 * dt;
+    player.vel.multiplyScalar(Math.pow(0.92, dt));
   }
   camera.position.addScaledVector(player.vel, dt);
   const fy = floorY(camera.position.x, camera.position.z) + 2;
@@ -555,14 +918,13 @@ function tick() {
       if (player.o2 < 0.98 && Math.floor(t*2)%4===0) audio.breath();
       player.o2 = Math.min(1, player.o2 + dt * 0.25);
     } else {
-      player.o2 -= dt / 600;     // ten minutes of breath
+      player.o2 -= dt / 600;
       if (player.o2 <= 0) blackout();
     }
   }
 
-  // ---- creak: hold right-click (or C). Locks the nearest prey in ANY
-  // direction; tick interval IS the round-trip time, so the buzz itself
-  // is the rangefinder. Each tick returns from the target's true bearing.
+  // ---- creak (rate = round-trip time; prey outranks fish for the lock)
+  lastCreakTarget = null;
   if ((player.creaking || keys.KeyC) && started && !player.dead) {
     let target = null, bd = 90, school = null, sd = 90;
     for (const c of contacts) {
@@ -571,11 +933,14 @@ function tick() {
       if (c.kind === 'school') { if (d < sd) { school = c; sd = d; } }
       else if (d < bd) { target = c; bd = d; }
     }
-    if (!target) { target = school; bd = sd; }   // prey outranks fish for the lock
+    if (!target) { target = school; bd = sd; }
+    lastCreakTarget = target;
     creakTimer -= dt;
     if (creakTimer <= 0 && target) {
       creakTimer = Math.max((2 * bd) / SOUND_SPEED, 0.045);
       audio.creakEcho(target, { pos: camera.position, vel: player.vel, fwd });
+      if (target === giant) giant.aggro += 0.1;
+      else if (giant.pos.distanceTo(camera.position) < 240) giant.aggro += 0.03;
     }
     if (!target) creakTimer = 0;
   } else creakTimer = 0;
@@ -587,18 +952,77 @@ function tick() {
       c.pos.z += Math.cos(t*0.05 + c.seed) * dt * 3;
       c.vel.set(Math.sin(t*0.07+c.seed)*3, 0, Math.cos(t*0.05+c.seed)*3);
       c.mesh.rotation.y += dt * 0.1;
+      // individual fish wiggle when anyone is close enough to see them
+      if (c.pos.distanceTo(camera.position) < 90) {
+        const p = c.mesh.geometry.attributes.position, base = c.fishBase;
+        for (let i = 0; i < p.count; i++) {
+          p.array[i*3]   = base[i*3]   + Math.sin(t * 3.1 + i * 1.7) * 0.16;
+          p.array[i*3+1] = base[i*3+1] + Math.sin(t * 2.3 + i * 2.9) * 0.10;
+          p.array[i*3+2] = base[i*3+2] + Math.cos(t * 2.7 + i * 1.3) * 0.16;
+        }
+        p.needsUpdate = true;
+      }
     } else if (c.kind === 'whale') {
-      c.heading += dt * 0.05;
-      c.vel.set(Math.cos(c.heading)*2.4, Math.sin(t*0.2+c.seed)*0.5, Math.sin(c.heading)*2.4);
-      c.pos.addScaledVector(c.vel, dt);
-      c.mesh.rotation.y = -c.heading;
-    } else { // squid & giant
+      if (c.follow) {
+        // the calf shadows her mother
+        const m = c.follow;
+        _v1.set(m.pos.x - Math.cos(m.heading) * 9 + Math.cos(m.heading + Math.PI/2) * 5,
+                m.pos.y - 2 + Math.sin(t * 0.4 + c.seed) * 1.2,
+                m.pos.z - Math.sin(m.heading) * 9 + Math.sin(m.heading + Math.PI/2) * 5);
+        _v2.subVectors(_v1, c.pos);
+        const d = _v2.length();
+        c.vel.lerp(_v2.normalize().multiplyScalar(Math.min(d * 0.8, 7)), dt * 2);
+        c.pos.addScaledVector(c.vel, dt);
+        c.heading = m.heading;
+        c.mesh.rotation.y = -c.heading;
+      } else if (c.mode === 'gather') {
+        c.modeT -= dt;
+        const az = Math.atan2(camera.position.z - c.pos.z, camera.position.x - c.pos.x);
+        c.heading = lerpAngle(c.heading, az, dt * 1.2);
+        const d = c.pos.distanceTo(camera.position);
+        const sp = 3.8 * THREE.MathUtils.clamp((d - 18) / 30, 0, 1);
+        c.vel.set(Math.cos(c.heading) * sp, THREE.MathUtils.clamp((camera.position.y - c.pos.y) * 0.08, -2.5, 2.5), Math.sin(c.heading) * sp);
+        c.pos.addScaledVector(c.vel, dt);
+        c.mesh.rotation.y = -c.heading;
+        if (c.modeT <= 0) c.mode = 'wander';
+      } else if (c.mode === 'hunt') {
+        c.modeT -= dt;
+        const tgt = c.huntTarget;
+        if (!tgt || !contacts.includes(tgt) || c.modeT <= 0) { c.mode = 'wander'; c.huntTarget = null; }
+        else {
+          const az = Math.atan2(tgt.pos.z - c.pos.z, tgt.pos.x - c.pos.x);
+          c.heading = lerpAngle(c.heading, az, dt * 1.4);
+          const d = c.pos.distanceTo(tgt.pos);
+          const sp = d > 25 ? 4.5 : 2.0;
+          c.vel.set(Math.cos(c.heading) * sp, THREE.MathUtils.clamp((tgt.pos.y - c.pos.y) * 0.10, -3, 3), Math.sin(c.heading) * sp);
+          c.pos.addScaledVector(c.vel, dt);
+          c.mesh.rotation.y = -c.heading;
+          c.jetCd -= dt;
+          if (d < 35 && c.jetCd <= 0) {
+            c.jetCd = 1.6;
+            // drive the prey: squid bolt away from the kin (often toward you)
+            if (tgt.kind === 'squid' && tgt.jetT <= 0) startJet(tgt, c.pos);
+            if (tgt.kind === 'school') {
+              _v1.subVectors(tgt.pos, c.pos).normalize().multiplyScalar(6);
+              tgt.pos.addScaledVector(_v1, 0.5);
+            }
+          }
+        }
+      } else {
+        c.heading += dt * 0.05;
+        c.vel.set(Math.cos(c.heading)*2.4, Math.sin(t*0.2+c.seed)*0.5, Math.sin(c.heading)*2.4);
+        c.pos.addScaledVector(c.vel, dt);
+        c.mesh.rotation.y = -c.heading;
+      }
+    } else if (c.kind === 'giant') {
+      giantBehavior(c, dt, t);
+      updateArms(c, dt);
+    } else { // squid
       const d = c.pos.distanceTo(camera.position);
-      if (c.kind === 'squid' && d < 13 && c.jetT <= 0) startJet(c);
+      if (d < 13 && c.jetT <= 0) startJet(c);
       if (c.jetT > 0) {
         c.jetT -= dt;
       } else {
-        // languid drift back toward home depth
         c.vel.multiplyScalar(Math.pow(0.3, dt));
         c.vel.y += (c.homeDepth - c.pos.y) * 0.01 * dt * 60;
         c.vel.x += Math.sin(t*0.3 + c.seed) * dt * 0.8;
@@ -606,17 +1030,18 @@ function tick() {
       }
       c.vel.y *= Math.pow(0.5, dt);
       c.pos.addScaledVector(c.vel, dt);
-      if (c.vel.lengthSq() > 0.1) c.mesh.lookAt(c.pos.clone().add(c.vel));
+      if (c.vel.lengthSq() > 0.1) c.mesh.lookAt(_v1.copy(c.pos).add(c.vel));
+      updateArms(c, dt);
     }
 
-    // passive sound management
+    // passive sound management (with facing-dependent muffle)
     if (started && (c.passiveRange || c.kind === 'school')) {
       const d = c.pos.distanceTo(camera.position);
       if (d < (c.passiveRange || 100)) {
         audio.startPassive(c);
         audio.pannerFor(c, c.pos);
-        const to = c.pos.clone().sub(camera.position).normalize();
-        audio.setPassiveMuffle(c, 0.5 + 0.5 * to.dot(fwd));
+        _v1.subVectors(c.pos, camera.position).normalize();
+        audio.setPassiveMuffle(c, 0.5 + 0.5 * _v1.dot(fwd));
       } else audio.stopPassive(c);
     }
   }
@@ -632,8 +1057,11 @@ function tick() {
   surfaceUniforms.uBrightness.value = Math.max(1 - dark, 0);
   surfaceUniforms.uTime.value = t;
   surfaceUniforms.uFogColor.value.copy(fogC).convertLinearToSRGB();
-  floorMesh.visible = depth > TWILIGHT;        // only once the fog is truly black
-  surfaceMesh.visible = depth < 200;            // below that it's just a black silhouette
+  floorMesh.visible = depth > TWILIGHT;
+  surfaceMesh.visible = depth < 200;
+  envU.uTime.value = t;
+  envU.uDark.value = dark;
+  envU.uFogDensity.value = scene.fog.density;
 
   const zone = depth < SUNLIT ? 'THE SUNLIT ZONE' : depth < TWILIGHT ? 'THE TWILIGHT' : 'THE ABYSS';
   if (zone !== curZone) {
@@ -648,14 +1076,13 @@ function tick() {
     const cp = camera.position;
     for (let i = 0; i < p.count; i++) {
       let x = p.getX(i), y = p.getY(i) - snowSink[i] * dt, z = p.getZ(i);
-      // wrap into the cube around the player without disturbing world-anchoring
       if (x - cp.x >  SNOW_R) x -= SNOW_R*2; else if (x - cp.x < -SNOW_R) x += SNOW_R*2;
       if (y - cp.y >  SNOW_R) y -= SNOW_R*2; else if (y - cp.y < -SNOW_R) y += SNOW_R*2;
       if (z - cp.z >  SNOW_R) z -= SNOW_R*2; else if (z - cp.z < -SNOW_R) z += SNOW_R*2;
       p.setXYZ(i, x, y, z);
     }
     p.needsUpdate = true;
-    snowMat.opacity = 0.5 * (1 - dark) + 0.05;   // barely-there in the deep
+    snowMat.opacity = 0.5 * (1 - dark) + 0.05;
   }
 
   // ---- flashes (sound made visible, sunlit calibration)
@@ -676,6 +1103,7 @@ function tick() {
 
   // ---- HUD
   player.pingCd -= dt;
+  player.callCd -= dt;
   player.bestDepth = Math.max(player.bestDepth, depth);
   const alt = camera.position.y - floorY(camera.position.x, camera.position.z);
   if (msgT > 0 && (msgT -= dt) <= 0) msgEl.style.opacity = 0;
@@ -690,12 +1118,14 @@ function tick() {
   if (gizmos) drawGizmos();
   fpsEma = fpsEma * 0.95 + 0.05 / Math.max(dt, 1e-4);
   if (debugOpen) updateDebug(dt, depth, alt);
+
+  prevYaw = euler.y; prevPitch = euler.x;
   renderer.render(scene, camera);
 }
 
-function startJet(c) {
+function startJet(c, from = camera.position) {
   c.jetT = 1.1;
-  const away = c.pos.clone().sub(camera.position).normalize();
+  const away = c.pos.clone().sub(from).normalize();
   away.y += (Math.random() - 0.4) * 0.8;
   c.vel.copy(away.normalize().multiplyScalar(20 + Math.random()*8));
   audio.jet(c);
@@ -712,6 +1142,11 @@ function blackout() {
   player.dead = true;
   fade.style.opacity = 1;
   say('', 0);
+  if (giant.state === 'grip' || giant.state === 'window') {
+    giant.state = 'lurk'; giant.aggro = 0;
+    giant.pos.set(120, -770, -80);
+    setGripOverlay(null);
+  }
   setTimeout(() => {
     camera.position.set(0, -2, 0);
     player.vel.set(0,0,0);
@@ -734,14 +1169,15 @@ addEventListener('resize', () => {
 
 // ------------------------------------------------------------------ debug
 window.SOUNDER = {
-  contacts, camera, player, audio, scene, euler, keys,
-  ping, bite,
+  contacts, camera, player, audio, scene, euler, keys, giant,
+  ping, bite, emitCall,
   state: () => ({
     depth: -camera.position.y,
     o2: player.o2, score: player.score,
     audioState: audio.ctx?.state,
     panners: audio.panners.size,
-    contacts: contacts.map(c => ({ kind: c.kind, d: Math.round(c.pos.distanceTo(camera.position)), size: +c.size.toFixed(1) })),
+    giant: { state: giant.state, aggro: +giant.aggro.toFixed(2), bites: giant.bites, d: Math.round(giant.pos.distanceTo(camera.position)) },
+    contacts: contacts.map(c => ({ kind: c.kind, d: Math.round(c.pos.distanceTo(camera.position)), size: +c.size.toFixed(1), mode: c.mode })),
   }),
   start,
 };
