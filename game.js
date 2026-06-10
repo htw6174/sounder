@@ -1078,9 +1078,10 @@ function tick() {
   camera.position.addScaledVector(player.vel, dt);
   const fy = floorY(camera.position.x, camera.position.z) + 2;
   camera.position.y = Math.max(camera.position.y, fy);
-  const horiz = Math.hypot(camera.position.x, camera.position.z);
-  if (horiz > 430) {
-    camera.position.x *= 430/horiz; camera.position.z *= 430/horiz;
+	const horiz = Math.hypot(camera.position.x, camera.position.z);
+  // World boundary to prevent getting completely lost
+  if (horiz > 1000) {
+    camera.position.x *= 1000/horiz; camera.position.z *= 1000/horiz;
   }
 
   // breaching
