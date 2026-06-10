@@ -80,15 +80,18 @@ export class AudioEngine {
     swell.connect(this.master);
     this.surfGain = mkLoop('bandpass', 650, 0.5, swell);
     this.rumbleGain = mkLoop('lowpass', 65, 0.7, this.master);
+    this.layerGain = mkLoop('bandpass', 3800, 2.2, this.master);   // the scattering layer's static
 
     this.ready = true;
   }
 
-  // call every frame with how shallow / how deep the player is (0..1 each)
-  ambient(shallowFrac, deepFrac) {
+  // call every frame with how shallow / how deep the player is (0..1 each),
+  // and how deep inside the scattering layer (0..1)
+  ambient(shallowFrac, deepFrac, layerFrac = 0) {
     if (!this.ready) return;
     this.surfGain.gain.value = 0.07 * shallowFrac;
     this.rumbleGain.gain.value = 0.09 * deepFrac;
+    this.layerGain.gain.value = 0.05 * layerFrac;
   }
 
   setVolume(v) {
@@ -586,6 +589,33 @@ export class AudioEngine {
     g.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
     src.connect(bp).connect(g).connect(this.master);
     src.start(t, Math.random(), 1.2);
+  }
+
+  // a hard re-entry: the boom that carries to every kin in the sea
+  breachBoom(k = 1) {
+    if (!this.ready) return;
+    const t = this.now();
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(44, t);
+    osc.frequency.exponentialRampToValueAtTime(26, t + 0.9);
+    const og = this.ctx.createGain();
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.exponentialRampToValueAtTime(0.7 * k, t + 0.04);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+    osc.connect(og).connect(this.master);
+    osc.start(t); osc.stop(t + 1.2);
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noise; src.playbackRate.value = 0.55;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(3200, t);
+    lp.frequency.exponentialRampToValueAtTime(300, t + 0.8);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.55 * k, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    src.connect(lp).connect(g).connect(this.master);
+    src.start(t, Math.random(), 1.0);
   }
 
   // breaking the surface, either direction

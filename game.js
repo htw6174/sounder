@@ -6,6 +6,9 @@ import { AudioEngine, SOUND_SPEED } from './audio.js';
 // ------------------------------------------------------------------ setup
 const FOG_BASE = new THREE.Color(0x0a4d77);
 const SUNLIT = 90, TWILIGHT = 300;      // zone boundaries (m of depth)
+const DAY_LEN = 1200;                   // seconds per full day
+let worldT = DAY_LEN * 0.12;            // begin mid-morning
+let curLight01 = 1, curLayerDepth = 300;
 const FLOOR_Y = -850;
 const floorY = (x, z) => FLOOR_Y + 12 * Math.sin(x * 0.01) + 10 * Math.cos(z * 0.013);
 
@@ -42,12 +45,12 @@ const waterUniforms = { uBrightness: { value: 1 } };
 const aboveU = { value: 0 };           // 0 underwater → 1 in air (breaching)
 {
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uBrightness: waterUniforms.uBrightness, uAbove: { value: 0 } },
+    uniforms: { uBrightness: waterUniforms.uBrightness, uAbove: { value: 0 }, uLight: { value: 1 } },
     side: THREE.BackSide,
     depthWrite: false,
     vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position);
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-    fragmentShader: `uniform float uBrightness; uniform float uAbove; varying vec3 vDir;
+    fragmentShader: `uniform float uBrightness; uniform float uAbove; uniform float uLight; varying vec3 vDir;
       void main(){
         // beneath: the water column gradient
         float up = vDir.y * 0.5 + 0.5;
@@ -58,10 +61,11 @@ const aboveU = { value: 0 };           // 0 underwater → 1 in air (breaching)
         // above: open sky, a sun, and the sea seen from over the waves
         float upS = clamp(vDir.y, 0.0, 1.0);
         vec3 sky = mix(vec3(0.78,0.88,0.94), vec3(0.28,0.55,0.85), pow(upS, 0.55));
+        sky *= mix(0.07, 1.0, uLight);          // night sky keeps only a trace
         vec3 sunDir = normalize(vec3(0.22, 0.42, -0.88));
         float s = max(dot(vDir, sunDir), 0.0);
-        sky += vec3(1.0,0.95,0.78) * (pow(s, 700.0) * 1.4 + pow(s, 9.0) * 0.13);
-        vec3 sea = vec3(0.05,0.20,0.33) * (0.7 + 0.3 * clamp(-vDir.y * 5.0, 0.0, 1.0));
+        sky += vec3(1.0,0.95,0.78) * (pow(s, 700.0) * 1.4 + pow(s, 9.0) * 0.13) * uLight;
+        vec3 sea = vec3(0.05,0.20,0.33) * (0.7 + 0.3 * clamp(-vDir.y * 5.0, 0.0, 1.0)) * mix(0.1, 1.0, uLight);
         vec3 air = mix(sea, sky, smoothstep(-0.015, 0.02, vDir.y));
         gl_FragColor = vec4(mix(water, air, uAbove), 1.0);
       }`,
@@ -72,6 +76,7 @@ const aboveU = { value: 0 };           // 0 underwater → 1 in air (breaching)
   sky.onBeforeRender = () => {
     sky.position.copy(camera.position);
     mat.uniforms.uAbove.value = aboveU.value;
+    mat.uniforms.uLight.value = curLight01;
   };
 }
 
@@ -419,7 +424,7 @@ function addSchool(x, y, z) {
   contacts.push({
     kind: 'school', mesh, pos: mesh.position, vel: new THREE.Vector3(),
     size, density, spread, seed: Math.random()*100, passiveRange: 100,
-    fishBase: pts.slice(),
+    fishBase: pts.slice(), dayY: y,
   });
 }
 
@@ -433,7 +438,7 @@ function addSquid(depth, opts = {}) {
   const c = {
     kind: giantFlag ? 'giant' : 'squid', mesh, pos: mesh.position,
     vel: new THREE.Vector3(), size, jetT: 0,
-    homeDepth: -depth, seed: Math.random()*100,
+    homeDepth: -depth, dayDepth: depth, seed: Math.random()*100,
     passiveRange: giantFlag ? 600 : 0,
     aggro: 0, state: 'lurk', gripSide: null,
     windT: 4, modeT: 0, struggle: 0, tentaclesLeft: 2, latchArm: null,
@@ -629,6 +634,7 @@ addEventListener('keydown', (e) => {
     if (e.code === 'Digit1') { camera.position.set(0, -2, 0); player.vel.set(0,0,0); }
     if (e.code === 'Digit2') { camera.position.set(0, -250, 0); player.vel.set(0,0,0); }
     if (e.code === 'Digit3') { camera.position.set(100, -740, -60); player.vel.set(0,0,0); }
+    if (e.code === 'KeyT') worldT += DAY_LEN / 6;    // skip four hours
   }
 });
 addEventListener('keyup', (e) => {
@@ -650,6 +656,23 @@ addEventListener('mouseup', (e) => { if (e.button === 2) player.creaking = false
 // ------------------------------------------------------------------ sonar
 // Emissions are SILENT — you are the click. You hear only the returns.
 const flashes = [];
+const spray = [];
+let fovPopT = 0, breachCallCd = 0;
+const sprayTex = dotTexture();
+function spawnSpray(at, n, power) {
+  for (let i = 0; i < n; i++) {
+    const mat = new THREE.SpriteMaterial({ map: sprayTex, color: 0xeaf6ff, transparent: true, opacity: 0.85, depthWrite: false });
+    const s = new THREE.Sprite(mat);
+    s.position.copy(at);
+    s.position.x += (Math.random() - 0.5) * 2;
+    s.position.z += (Math.random() - 0.5) * 2;
+    s.scale.setScalar(0.4 + Math.random() * 0.9);
+    const a = Math.random() * Math.PI * 2;
+    const r = (2 + Math.random() * 4) * power;
+    scene.add(s);
+    spray.push({ s, t: 0, vel: new THREE.Vector3(Math.cos(a) * r, (3 + Math.random() * 8) * power, Math.sin(a) * r) });
+  }
+}
 function ping() {
   if (!started || player.pingCd > 0 || player.dead) return;
   player.pingCd = 0.9;
@@ -664,6 +687,10 @@ function ping() {
     if (depth < SUNLIT + 40) scheduleFlash(c, delay);
   }
   audio.boundaryEcho(depth, camera.position.y - floorY(camera.position.x, camera.position.z), camera.position);
+  if (Math.abs(curLayerDepth - depth) > 25) {
+    audio.echo({ key: 'dsl', kind: 'school', size: 3, density: 0.5, spread: 40,
+      pos: { x: camera.position.x, y: -curLayerDepth, z: camera.position.z } }, obs);
+  }
   // squid hear a close loud click and may bolt; the giant only listens
   for (const c of contacts) {
     if (c.kind === 'squid' && c.jetT <= 0 && c.pos.distanceTo(camera.position) < 70 && Math.random() < 0.4) startJet(c);
@@ -1038,6 +1065,7 @@ function updateDebug(dt, depth, alt) {
     `depth ${depth.toFixed(1)} · alt ${alt.toFixed(1)}<br>` +
     `o2 ${(player.o2 * 100).toFixed(1)}% · vel ${player.vel.length().toFixed(2)}<br>` +
     `contacts ${contacts.length} · panners ${audio.panners.size} · fps ${fpsEma.toFixed(0)}<br>` +
+    `day ${((worldT / DAY_LEN) % 1).toFixed(2)} · light ${curLight01.toFixed(2)} · layer ${Math.round(curLayerDepth)}m<br>` +
     `giant: ${g}<br>` +
     `[G] gizmos ${gizmos ? 'ON' : 'off'} · [O] refill O₂ · [1/2/3] teleport`;
 }
@@ -1045,7 +1073,7 @@ function updateDebug(dt, depth, alt) {
 // ------------------------------------------------------------------ loop
 const clock = new THREE.Clock();
 let firstPing = false, creakTimer = 0, wasUnder = true;
-let songlineT = 75 + Math.random() * 60, heardSongline = false, heardChannel = false;
+let songlineT = 75 + Math.random() * 60, heardSongline = false, heardChannel = false, sawNight = false;
 const CHANNEL_DEPTH = 580, CHANNEL_HALF = 70;   // the deep sound channel
 
 function lerpAngle(a, b, k) {
@@ -1104,9 +1132,30 @@ function tick() {
 
   // breaching
   if (under !== wasUnder) {
-    audio.splash(under ? 0.5 : Math.min(Math.abs(player.vel.y) / 10, 1));
-    if (!under) audio.breath();
+    const vy = Math.abs(player.vel.y);
+    audio.splash(under ? Math.min(vy / 10, 1) : Math.min(vy / 10, 1));
+    if (!under) {
+      audio.breath();
+      if (vy > 5) { spawnSpray(camera.position, Math.round(8 + vy * 1.6), Math.min(vy / 11, 1.2)); fovPopT = 0.8; }
+    } else if (vy > 7) {
+      // a full breach come down hard: the boom every kin hears
+      spawnSpray(_v5.copy(camera.position).setY(0.5), 26, 1);
+      audio.breachBoom(Math.min(vy / 13, 1));
+      if (breachCallCd <= 0) {
+        breachCallCd = 30;
+        for (const k of contacts) {
+          if (k.kind === 'whale' && !k.follow) { k.mode = 'gather'; k.modeT = 50; }
+        }
+        say('the crash carries — the pod turns toward you.', 5);
+      }
+    }
     wasUnder = under;
+  }
+  breachCallCd -= dt;
+  if (fovPopT > 0) {
+    fovPopT -= dt;
+    camera.fov = 68 + 7 * Math.max(fovPopT / 0.8, 0) * Math.sin((1 - fovPopT / 0.8) * Math.PI);
+    camera.updateProjectionMatrix();
   }
   aboveU.value += ((under ? 0 : 1) - aboveU.value) * Math.min(dt * 8, 1);
 
@@ -1148,6 +1197,8 @@ function tick() {
   // ---- contacts behavior
   for (const c of contacts) {
     if (c.kind === 'school') {
+      const targetY = c.dayY * THREE.MathUtils.lerp(0.45, 1, curLight01);
+      c.pos.y += (targetY - c.pos.y) * dt * 0.05;
       c.pos.x += Math.sin(t*0.07 + c.seed) * dt * 3;
       c.pos.z += Math.cos(t*0.05 + c.seed) * dt * 3;
       c.vel.set(Math.sin(t*0.07+c.seed)*3, 0, Math.cos(t*0.05+c.seed)*3);
@@ -1227,6 +1278,9 @@ function tick() {
       if (c.jetT > 0) {
         c.jetT -= dt;
       } else {
+        // vertical migration: the deep rises at night
+        const targetHome = -c.dayDepth * THREE.MathUtils.lerp(0.4, 1, curLight01);
+        c.homeDepth += (targetHome - c.homeDepth) * dt * 0.03;
         c.vel.multiplyScalar(Math.pow(0.3, dt));
         c.vel.y += (c.homeDepth - c.pos.y) * 0.01 * dt * 60;
         c.vel.x += Math.sin(t*0.3 + c.seed) * dt * 0.8;
@@ -1255,15 +1309,26 @@ function tick() {
     }
   }
 
+  // ---- the clock: light, the layer, the breathing ocean
+  worldT += dt;
+  const sunEl = Math.cos((worldT / DAY_LEN) * Math.PI * 2);
+  curLight01 = THREE.MathUtils.smoothstep(sunEl, -0.25, 0.25);
+  const lightK = 0.22 + 0.78 * curLight01;
+  curLayerDepth = THREE.MathUtils.lerp(150, 430, curLight01);
+  if (curLight01 < 0.08 && !sawNight) {
+    sawNight = true;
+    say('night. the deep rises to meet you.', 6);
+  }
+
   // ---- environment by depth
   const dark = THREE.MathUtils.clamp((depth - 25) / (TWILIGHT - 25), 0, 1);
   const black = THREE.MathUtils.clamp((depth - SUNLIT) / (TWILIGHT * 1.6), 0, 1);
-  const fogC = FOG_BASE.clone().multiplyScalar(Math.max(1 - dark, 0.0));
+  const fogC = FOG_BASE.clone().multiplyScalar(Math.max(1 - dark, 0.0) * lightK);
   scene.fog.color.copy(fogC);
   scene.background.copy(fogC);
   scene.fog.density = under ? 0.026 + black * 0.05 : 0.002;
-  waterUniforms.uBrightness.value = Math.max(1 - dark * 1.1, 0);
-  surfaceUniforms.uBrightness.value = Math.max(1 - dark, 0);
+  waterUniforms.uBrightness.value = Math.max(1 - dark * 1.1, 0) * lightK;
+  surfaceUniforms.uBrightness.value = Math.max(1 - dark, 0) * lightK;
   surfaceUniforms.uTime.value = t;
   surfaceUniforms.uFogColor.value.copy(fogC).convertLinearToSRGB();
   floorMesh.visible = depth > TWILIGHT;
@@ -1295,6 +1360,18 @@ function tick() {
     snowMat.opacity = 0.5 * (1 - dark) + 0.05;
   }
 
+  // ---- breach spray
+  for (let i = spray.length - 1; i >= 0; i--) {
+    const p = spray[i];
+    p.t += dt;
+    p.vel.y -= 15 * dt;
+    p.s.position.addScaledVector(p.vel, dt);
+    p.s.material.opacity = Math.max(0.85 - p.t * 0.8, 0);
+    if (p.t > 1.3 || (p.s.position.y < 0 && p.vel.y < 0)) {
+      scene.remove(p.s); p.s.material.dispose(); spray.splice(i, 1);
+    }
+  }
+
   // ---- flashes (sound made visible, sunlit calibration)
   for (let i = flashes.length - 1; i >= 0; i--) {
     const f = flashes[i];
@@ -1309,7 +1386,8 @@ function tick() {
     audio.updateListener(camera);
     const giantHold = contacts.includes(giant) ? (giant.state === 'grasp' ? 1 : giant.state === 'latch' ? 0.5 : 0) : 0;
     audio.body(dt, player.o2, giantHold);
-    audio.ambient(under ? THREE.MathUtils.clamp(1 - depth / 15, 0, 1) : 1, black);
+    const layer01 = THREE.MathUtils.clamp(1 - Math.abs(depth - curLayerDepth) / 70, 0, 1);
+    audio.ambient(under ? THREE.MathUtils.clamp(1 - depth / 15, 0, 1) : 1, black, layer01);
     // the songline: another clan, somewhere beyond the dark.
     // in the deep sound channel the sea is a waveguide — voices arrive
     // clearer and far more often there.
