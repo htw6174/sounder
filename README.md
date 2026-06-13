@@ -1,3 +1,5 @@
+*Disclaimer: 100% vibe coded and AI-documented*
+
 # SOUNDER
 
 *a sperm whale odyssey*
