@@ -412,7 +412,7 @@ scene.add(new THREE.AmbientLight(0x4488bb, 0.8));
 
 // ---------------------------------------------------------------- dive state
 const ui = document.getElementById('ui');
-let diving = false, diveT = 0;
+let diving = false, diveT = 0, navigated = false;
 function startDive() {
   if (diving) return;
   diving = true;
@@ -477,7 +477,16 @@ function tick() {
     scene.fog.density = FOG_DENSITY + depth * 0.02;
     surfaceUniforms.uBrightness.value = Math.max(1 - depth * 1.2, 0);
     waterUniforms.uBrightness.value = Math.max(1 - depth, 0.05);
-    if (diveT > 5 && diveParam !== 'deep') location.replace('game.html');
+    if (diveT > 5 && diveParam !== 'deep' && !navigated) {
+      navigated = true;
+      // Fire the navigation exactly once and stop the loop. Without the guard
+      // this ran every frame; Firefox aborts an in-flight load when
+      // location.replace() is called again before it commits (NS_BINDING_ABORTED),
+      // so the redirect to game.html never landed. Returning also halts rendering
+      // and frees the title scene's WebGL context during the handoff.
+      location.replace('game.html');
+      return;
+    }
   }
 
   renderer.render(scene, camera);
